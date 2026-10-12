@@ -28,8 +28,11 @@ inputs:
     description: Upload SARIF results to GitHub code scanning.
     default: "true"
   version:
-    description: tfcap version to install (a tag, or "latest").
-    default: latest
+    description: >-
+      tfcap version to install from the Go module proxy (for example v0.1.0).
+      Leave empty (the default) to build from this Action's own source, so the
+      binary always matches the commit you pinned the Action to.
+    default: ""
   github-token:
     description: Token used for the PR comment.
     default: ${{ github.token }}
@@ -51,7 +54,14 @@ runs:
       shell: bash
       env:
         TFCAP_VERSION: ${{ inputs.version }}
-      run: go install "github.com/r-morato/tfcap/cmd/tfcap@${TFCAP_VERSION}"
+      run: |
+        if [ -z "$TFCAP_VERSION" ]; then
+          cd "$GITHUB_ACTION_PATH"
+          go install -trimpath ./cmd/tfcap
+        else
+          go install -trimpath "github.com/r-morato/tfcap/cmd/tfcap@${TFCAP_VERSION}"
+        fi
+        tfcap version
 
     - name: Run tfcap
       id: run

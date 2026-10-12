@@ -171,7 +171,7 @@ jobs:
           fail-on: high
 ```
 
-The action posts (and updates) a single PR comment, uploads SARIF to code scanning, and fails the job according to `fail-on`. Given that the Trivy and KICS Actions were both hit by supply-chain incidents earlier this year, please pin this one, and every other Action, to a commit SHA.
+The action posts (and updates) a single PR comment, uploads SARIF to code scanning, and fails the job according to `fail-on`. By default it builds tfcap from the Action's own source, so pinning the Action to a commit SHA also pins the scanner binary. Given that the Trivy and KICS Actions were both hit by supply-chain incidents earlier this year, please pin this one, and every other Action, to a commit SHA.
 
 ## How it works
 

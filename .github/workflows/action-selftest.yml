@@ -1,0 +1,42 @@
+# Exercises the composite Action in this repo against the bundled examples.
+name: action-selftest
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+  pull-requests: write
+  security-events: write
+jobs:
+  benign-module-passes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./
+        with:
+          working-directory: examples/upgrade-attack/before
+          mode: scan
+          fail-on: high
+          comment: "false"
+          sarif: "false"
+
+  malicious-upgrade-fails:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: tfcap
+        uses: ./
+        continue-on-error: true
+        with:
+          working-directory: examples/upgrade-attack/after
+          mode: scan
+          fail-on: high
+          comment: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+          sarif: "true"
+      - name: Expect a policy failure (exit 1)
+        env:
+          CODE: ${{ steps.tfcap.outputs.exit-code }}
+        run: |
+          echo "tfcap exit code: $CODE"
+          test "$CODE" = "1"
