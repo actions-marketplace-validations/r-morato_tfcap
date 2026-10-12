@@ -1,0 +1,116 @@
+name: tfcap
+description: Inventory Terraform/OpenTofu module capabilities and catch risky module upgrades and tag mutation.
+author: r-morato
+branding:
+  icon: shield
+  color: purple
+
+inputs:
+  working-directory:
+    description: Terraform root module directory. Run `terraform init` (or `tofu init`) first.
+    default: "."
+  mode:
+    description: "verify (check against tfcap.lock.json) or scan (inventory everything)"
+    default: verify
+  fail-on:
+    description: Fail the job when a finding is at or above this severity (none|info|low|medium|high|critical).
+    default: high
+  min-severity:
+    description: Hide findings below this severity.
+    default: low
+  third-party-only:
+    description: Only report capabilities from third-party modules (scan mode).
+    default: "true"
+  comment:
+    description: Post or update a PR comment with the results.
+    default: "true"
+  sarif:
+    description: Upload SARIF results to GitHub code scanning.
+    default: "true"
+  version:
+    description: tfcap version to install (a tag, or "latest").
+    default: latest
+  github-token:
+    description: Token used for the PR comment.
+    default: ${{ github.token }}
+
+outputs:
+  exit-code:
+    description: tfcap exit code (0 ok, 1 policy failure, 2 error).
+    value: ${{ steps.run.outputs.exit-code }}
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-go@v5
+      with:
+        go-version: stable
+        cache: false
+
+    - name: Install tfcap
+      shell: bash
+      env:
+        TFCAP_VERSION: ${{ inputs.version }}
+      run: go install "github.com/r-morato/tfcap/cmd/tfcap@${TFCAP_VERSION}"
+
+    - name: Run tfcap
+      id: run
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        MODE: ${{ inputs.mode }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        MIN_SEV: ${{ inputs.min-severity }}
+        THIRD: ${{ inputs.third-party-only }}
+      run: |
+        set +e
+        case "$MODE" in
+          verify|scan) ;;
+          *) echo "::error::mode must be verify or scan"; exit 2 ;;
+        esac
+        extra=()
+        if [ "$MODE" = scan ] && [ "$THIRD" = "true" ]; then extra+=(--third-party-only); fi
+        md=markdown; [ "$MODE" = scan ] && md=text
+        tfcap "$MODE" . --format sarif --output "$RUNNER_TEMP/tfcap.sarif" --fail-on none --min-severity "$MIN_SEV" "${extra[@]}"
+        tfcap "$MODE" . --format "$md" --output "$RUNNER_TEMP/tfcap.md" --fail-on none --min-severity "$MIN_SEV" --no-color "${extra[@]}"
+        tfcap "$MODE" . --fail-on "$FAIL_ON" --min-severity "$MIN_SEV" "${extra[@]}"
+        code=$?
+        echo "exit-code=$code" >> "$GITHUB_OUTPUT"
+        if [ "$md" = text ]; then
+          { echo '### tfcap scan'; echo '```'; cat "$RUNNER_TEMP/tfcap.md"; echo '```'; } > "$RUNNER_TEMP/tfcap.comment.md"
+        else
+          cp "$RUNNER_TEMP/tfcap.md" "$RUNNER_TEMP/tfcap.comment.md"
+        fi
+        cat "$RUNNER_TEMP/tfcap.comment.md" >> "$GITHUB_STEP_SUMMARY"
+        exit 0
+
+    - name: Upload SARIF
+      if: inputs.sarif == 'true' && steps.run.outputs.exit-code != '2'
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ runner.temp }}/tfcap.sarif
+        category: tfcap
+
+    - name: Comment on PR
+      if: inputs.comment == 'true' && github.event_name == 'pull_request' && steps.run.outputs.exit-code != '2'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        PR: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+      run: |
+        file="$RUNNER_TEMP/tfcap.comment.md"
+        grep -q '<!-- tfcap -->' "$file" || sed -i '1i <!-- tfcap -->' "$file"
+        id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate \
+          --jq '[.[] | select(.body | contains("<!-- tfcap -->"))][0].id // empty')
+        if [ -n "$id" ]; then
+          gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@"$file" >/dev/null
+        else
+          gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@"$file" >/dev/null
+        fi
+
+    - name: Enforce fail-on
+      shell: bash
+      env:
+        CODE: ${{ steps.run.outputs.exit-code }}
+      run: exit "${CODE:-2}"
