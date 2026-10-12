@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/r-morato/tfcap/internal/analyze"
 	"github.com/r-morato/tfcap/internal/diff"
 	"github.com/r-morato/tfcap/internal/lock"
 	"github.com/r-morato/tfcap/internal/model"
@@ -269,7 +270,7 @@ func Verify(w io.Writer, v *lock.Result, st Style) {
 		}
 		extra := m.Source
 		if m.Status == lock.StatusUpgraded {
-			extra = fmt.Sprintf("%s %s → %s", m.Source, m.LockedVer, m.CurrentVer)
+			extra = fmt.Sprintf("%s → %s", verLabel(m.LockedSource, m.LockedVer), verLabel(m.Source, m.CurrentVer))
 		}
 		fmt.Fprintf(w, "%s %s %s\n", label, displayKey(m.Key), st.c(dim, extra))
 	}
@@ -295,9 +296,9 @@ func VerifyMarkdown(w io.Writer, v *lock.Result) {
 	fmt.Fprintln(w, "| Module | Status | Version |")
 	fmt.Fprintln(w, "|---|---|---|")
 	for _, m := range v.Modules {
-		ver := m.CurrentVer
+		ver := verLabel(m.Source, m.CurrentVer)
 		if m.Status == lock.StatusUpgraded {
-			ver = m.LockedVer + " → " + m.CurrentVer
+			ver = verLabel(m.LockedSource, m.LockedVer) + " → " + verLabel(m.Source, m.CurrentVer)
 		}
 		status := m.Status
 		if status == lock.StatusMutated {
@@ -307,6 +308,18 @@ func VerifyMarkdown(w io.Writer, v *lock.Result) {
 	}
 	fmt.Fprintln(w)
 	capsTable(w, "Unreviewed capabilities", v.Findings, true)
+}
+
+// verLabel shows a registry version, or a git ref when the version lives
+// in the source string, or the source itself as a last resort.
+func verLabel(src, ver string) string {
+	if ver != "" {
+		return ver
+	}
+	if ref := analyze.ClassifySource(src).Ref; ref != "" {
+		return "ref=" + ref
+	}
+	return src
 }
 
 // ---- rules ----

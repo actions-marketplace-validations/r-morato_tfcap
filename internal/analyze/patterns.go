@@ -64,8 +64,11 @@ func sensitivePath(s string) (string, bool) {
 				strings.HasPrefix(strings.ToLower(s[loc[0]:]), "/.ssh/known_hosts") {
 				continue
 			}
-			if loc[0] > 0 && s[loc[0]-1] == '~' {
-				loc[0]--
+			for _, home := range []string{"~", "$HOME", "${HOME}", "%USERPROFILE%", "$env:USERPROFILE"} {
+				if strings.HasSuffix(s[:loc[0]], home) {
+					loc[0] -= len(home)
+					break
+				}
 			}
 			return strings.Trim(s[loc[0]:loc[1]], " \"'=:"), true
 		}

@@ -47,7 +47,13 @@ func (a *analyzer) analyzeJSON(src []byte) {
 				call := ModuleCall{Name: name, Source: src, Version: ver, File: a.file, Line: a.lineOf(`"` + name + `"`)}
 				a.res.Calls = append(a.res.Calls, call)
 				a.checkSource(call, addr, a.rangeOf(`"`+name+`"`))
-				a.jsonStrings(body, addr)
+				rest := map[string]any{}
+				for k, v := range body {
+					if k != "source" && k != "version" {
+						rest[k] = v
+					}
+				}
+				a.jsonStrings(rest, addr)
 			})
 		case "terraform":
 			for _, tb := range asObjects(v) {

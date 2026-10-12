@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 
 	"github.com/r-morato/tfcap/internal/diff"
@@ -38,6 +39,12 @@ Run 'tfcap <command> -h' for flags. Exit codes: 0 ok, 1 policy failure (--fail-o
 `
 
 func main() {
+	if version == "dev" {
+		// `go install ...@v1.2.3` embeds the module version.
+		if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+			version = bi.Main.Version
+		}
+	}
 	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 }
 

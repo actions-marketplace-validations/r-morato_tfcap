@@ -184,9 +184,13 @@ func blockAddr(b *hclsyntax.Block) string {
 
 // walkBody visits every attribute expression in body (recursively).
 func (a *analyzer) walkBody(body *hclsyntax.Body, addr string) {
+	isModule := strings.HasPrefix(addr, "module.")
 	for name, attr := range body.Attributes {
 		if name == "description" || name == "validation" {
 			continue
+		}
+		if isModule && (name == "source" || name == "version") {
+			continue // analyzed by checkSource, not an endpoint the module calls
 		}
 		a.walkExpr(attr.Expr, addr)
 	}

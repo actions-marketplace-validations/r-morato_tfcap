@@ -110,13 +110,14 @@ const (
 
 // ModuleStatus is the verification outcome for one module.
 type ModuleStatus struct {
-	Key         string `json:"key"`
-	Status      string `json:"status"`
-	Source      string `json:"source,omitempty"`
-	LockedVer   string `json:"locked_version,omitempty"`
-	CurrentVer  string `json:"current_version,omitempty"`
-	LockedHash  string `json:"locked_hash,omitempty"`
-	CurrentHash string `json:"current_hash,omitempty"`
+	Key          string `json:"key"`
+	Status       string `json:"status"`
+	Source       string `json:"source,omitempty"`
+	LockedSource string `json:"locked_source,omitempty"`
+	LockedVer    string `json:"locked_version,omitempty"`
+	CurrentVer   string `json:"current_version,omitempty"`
+	LockedHash   string `json:"locked_hash,omitempty"`
+	CurrentHash  string `json:"current_hash,omitempty"`
 }
 
 // Result of verifying a report against a lock.
@@ -157,8 +158,8 @@ func Verify(f *File, rep *model.Report) *Result {
 			r := rules.Get(rules.SrcContentChanged)
 			res.Findings = append(res.Findings, model.Capability{
 				RuleID: r.ID, Severity: r.Severity, Phase: r.Phase, Module: m.Key, Address: "module." + lastSegment(m.Key),
-				Message: fmt.Sprintf("%s@%s content changed since it was locked (%s → %s). The tag or registry release was re-pointed.",
-					m.Source, versionOr(m.Version), short(e.Hash), short(m.Hash)),
+				Message: fmt.Sprintf("%s content changed since it was locked (%s → %s). The tag or registry release was re-pointed.",
+					withVersion(m.Source, m.Version), short(e.Hash), short(m.Hash)),
 				Detail: "hash:" + m.Hash,
 			})
 			for _, c := range e.Capabilities {
@@ -166,7 +167,7 @@ func Verify(f *File, rep *model.Report) *Result {
 			}
 		case e.Source != m.Source || e.Version != m.Version:
 			st.Status = StatusUpgraded
-			st.LockedVer, st.LockedHash = e.Version, e.Hash
+			st.LockedVer, st.LockedHash, st.LockedSource = e.Version, e.Hash, e.Source
 			for _, c := range e.Capabilities {
 				known[c.Fingerprint] = true
 			}
@@ -208,11 +209,11 @@ func lastSegment(k string) string {
 	return k
 }
 
-func versionOr(v string) string {
+func withVersion(src, v string) string {
 	if v == "" {
-		return "(unversioned)"
+		return src
 	}
-	return v
+	return src + "@" + v
 }
 
 func short(h string) string {

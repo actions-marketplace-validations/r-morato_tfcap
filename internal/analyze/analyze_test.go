@@ -207,6 +207,11 @@ terraform {
 			want: []string{rules.ProvCustomHost},
 		},
 		{
+			name:    "module source urls are not endpoints",
+			files:   map[string]string{"main.tf": `module "a" { source = "git::https://github.com/x/y.git?ref=0123456789abcdef0123456789abcdef01234567" }`},
+			notWant: []string{rules.NetEndpoint},
+		},
+		{
 			name:    "description urls are ignored",
 			files:   map[string]string{"variables.tf": `variable "x" { description = "See https://docs.example.com" }`},
 			notWant: []string{rules.NetEndpoint},
