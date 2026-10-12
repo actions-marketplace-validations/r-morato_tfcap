@@ -1,0 +1,1 @@
+{"Modules":[{"Key":"","Source":"","Dir":"."},{"Key":"network","Source":"registry.terraform.io/acme-oss/network/aws","Version":"1.4.1","Dir":".terraform/modules/network"}]}
