@@ -6,6 +6,10 @@
 
 Think of it as *Socket.dev for Terraform*. It complements Checkov, Trivy and KICS; it doesn't replace them.
 
+![tfcap verify catching a malicious patch release of a module: 1.4.0 to 1.4.1 adds plan-time credential theft, a typosquatted provider and an admin role](docs/demo.gif)
+
+The same thing as a one-off comparison of two trees:
+
 ```
 $ tfcap diff before/ after/
 
