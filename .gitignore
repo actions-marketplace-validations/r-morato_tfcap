@@ -1,0 +1,9 @@
+/tfcap
+/tfcap.exe
+/dist/
+*.sarif
+coverage.out
+
+# Terraform working dirs, except the committed example fixtures
+.terraform/
+!examples/**/.terraform/
