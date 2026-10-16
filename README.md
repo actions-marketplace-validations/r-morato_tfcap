@@ -147,7 +147,7 @@ tfcap diff base.json head.json --format markdown > comment.md
 | `tfcap verify [dir]` | Check against the lock. Formats: `text`, `json`, `markdown`, `sarif`. |
 | `tfcap rules` | List every rule (`--format markdown` for docs). |
 
-Common flags: `--fail-on <severity|none>`, `--min-severity`, `--third-party-only`, `--format`, `--output`, `--data-dir`, `--no-color`.
+Common flags: `--fail-on <severity|none>`, `--min-severity`, `--third-party-only`, `--format`, `--output`, `--data-dir`, `--no-color`, and for SARIF `--sarif-base <dir>` (the scanned folder relative to the repository root).
 Exit codes: `0` ok, `1` findings at or above `--fail-on`, `2` usage or runtime error.
 
 ## What it detects
@@ -168,30 +168,63 @@ Every finding records the **phase** it fires in (`init`, `plan`, `apply`, `stati
 
 ## GitHub Action
 
-```yaml
-# .github/workflows/tfcap.yml
-name: tfcap
-on: pull_request
-permissions:
-  contents: read
-  pull-requests: write     # PR comment
-  security-events: write   # SARIF upload
-jobs:
-  tfcap:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: hashicorp/setup-terraform@v3
-      - run: terraform init -backend=false -input=false
-        working-directory: infra
-      - uses: r-morato/tfcap@v0   # pin to a full commit SHA in production
-        with:
-          working-directory: infra
-          mode: verify            # or: scan
-          fail-on: high
-```
+[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-tfcap%20Plan%20Guard-6f42c1?logo=github)](https://github.com/marketplace/actions/tfcap-plan-guard)
 
-The action posts (and updates) a single PR comment, uploads SARIF to code scanning, and fails the job according to `fail-on`. By default it builds tfcap from the Action's own source, so pinning the Action to a commit SHA also pins the scanner binary. Given that the Trivy and KICS Actions were both hit by supply-chain incidents earlier this year, please pin this one, and every other Action, to a commit SHA.
+On every pull request, tfcap Plan Guard checks your modules against `tfcap.lock.json` before anything runs `terraform plan`. When something changes, it comments on the PR, adds code-scanning alerts on the `module` block that pulled the change in, and fails the check.
+
+**See it live:** [this demo pull request](https://github.com/r-morato/tfcap-action-demo/pull/1) bumps a module to a version that steals credentials during plan.
+
+### Setup
+
+1. **Lock your modules** (locally, once):
+   ```sh
+   cd infra                       # your Terraform root module
+   terraform init -backend=false
+   tfcap lock                     # writes tfcap.lock.json
+   git add tfcap.lock.json && git commit -m "Lock Terraform module capabilities"
+   ```
+2. **Add the workflow** as `.github/workflows/tfcap.yml`:
+   ```yaml
+   name: tfcap
+   on:
+     pull_request:
+     push:
+       branches: [main]
+   permissions:
+     contents: read
+     pull-requests: write     # PR comment
+     security-events: write   # code-scanning alerts
+   jobs:
+     tfcap:
+       runs-on: ubuntu-latest
+       steps:
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+         - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+         - run: terraform init -backend=false -input=false
+           working-directory: infra
+         - uses: r-morato/tfcap@v0  # pin to a commit SHA in production
+           with:
+             working-directory: infra
+   ```
+3. **When a PR changes a module**, review what tfcap reports. If you accept it, run `tfcap lock` again and commit the updated lock file in the same PR; the lock-file diff then records exactly what you approved.
+
+### Inputs
+
+| Input | Default | Description |
+|---|---|---|
+| `working-directory` | `.` | Terraform root module, relative to the repository root. Run `terraform init` or `tofu init` there first. |
+| `mode` | `verify` | `verify`: compare against `tfcap.lock.json` and report only unreviewed changes. `scan`: report everything (no lock file needed). |
+| `fail-on` | `high` | Fail the check at or above this severity: `none`, `info`, `low`, `medium`, `high`, `critical`. |
+| `min-severity` | `low` | Hide findings below this severity in the comment and alerts. |
+| `third-party-only` | `true` | `scan` mode only: ignore capabilities in your own modules. |
+| `comment` | `true` | Post a PR comment, and update the same comment on later pushes. |
+| `sarif` | `true` | Upload results to GitHub code scanning (needs `security-events: write`). |
+| `version` | *(empty)* | Empty builds tfcap from the Action's own source, so the scanner is pinned with the Action. Or set a release such as `v0.1.2`. |
+| `github-token` | `github.token` | Token used for the PR comment. |
+
+Output: `exit-code` (`0` ok, `1` policy failure, `2` error).
+
+Pin this Action, and every other Action, to a commit SHA: the Trivy and KICS Actions were both hit by supply-chain incidents earlier this year. Because tfcap builds from the Action's own source by default, pinning the Action also pins the scanner binary.
 
 ## How it works
 
@@ -212,7 +245,6 @@ The action posts (and updates) a single PR comment, uploads SARIF to code scanni
 - [ ] `tfcap fetch`: resolve and download remote modules without `terraform init` (pre-init review of a PR)
 - [ ] Sandboxed `plan` mode: run plan in a network-isolated container and record every exec/connect attempt
 - [ ] Allow-list file (`.tfcap.yml`) for accepted hosts and capabilities
-- [ ] Map third-party findings in SARIF to the `module` call site in your repo
 - [ ] Azure/GCP IAM wildcard rules
 - [ ] Registry metadata checks: publisher age, recently transferred namespaces
 
