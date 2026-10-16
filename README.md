@@ -68,11 +68,22 @@ On the demo module above, **Checkov 3.3.28** (default Terraform checks) reports 
 
 ## Install
 
+Requires Go 1.25 or newer.
+
 ```sh
 go install github.com/r-morato/tfcap/cmd/tfcap@latest
 ```
 
-Prebuilt binaries for Linux, macOS and Windows are attached to each [release](https://github.com/r-morato/tfcap/releases).
+`go install` puts the binary in `~/go/bin` (on Windows, `%USERPROFILE%\go\bin`). If your shell says `tfcap: command not found`, add that folder to your PATH:
+
+```sh
+# macOS / Linux with zsh (use ~/.bashrc for bash)
+echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc && source ~/.zshrc
+```
+
+The Windows Go installer usually adds its folder to PATH for you. Check it works with `tfcap version`.
+
+From v0.1.0 onwards, prebuilt binaries for Linux, macOS and Windows will be attached to each [release](https://github.com/r-morato/tfcap/releases), so you won't need Go installed.
 
 ## Quick start
 
