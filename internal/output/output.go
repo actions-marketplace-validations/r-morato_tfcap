@@ -114,7 +114,73 @@ func Report(w io.Writer, rep *model.Report, st Style) {
 	for _, e := range rep.Errors {
 		fmt.Fprintf(w, "%s %s\n", st.c(red, "error:"), e)
 	}
-	fmt.Fprintf(w, "%d modules, %d capabilities %s\n", len(rep.Modules), len(rep.Capabilities), summary(counts, st))
+	fmt.Fprintln(w, checkedLine(rep, st))
+	if len(rep.Capabilities) == 0 {
+		fmt.Fprintln(w, st.c(green, "No capabilities found."))
+	} else {
+		fmt.Fprintf(w, "%s %s\n", plural(len(rep.Capabilities), "capability", "capabilities"), summary(counts, st))
+	}
+	if n := countRule(rep.Capabilities, rules.SrcNotDownloaded); n > 0 {
+		fmt.Fprintln(w, st.c(yellow, fmt.Sprintf("%s not analyzed because it is not downloaded: run `terraform init` (or `tofu init`) first.",
+			plural(n, "remote module", "remote modules"))))
+	}
+}
+
+// checkedLine says what was examined, so a clean result is visibly a real
+// check rather than an empty run.
+func checkedLine(rep *model.Report, st Style) string {
+	third, files := 0, 0
+	provs := map[string]bool{}
+	for _, m := range rep.Modules {
+		if m.ThirdParty {
+			third++
+		}
+		files += m.Files
+		for _, p := range m.Providers {
+			provs[strings.ToLower(p.Source)] = true
+		}
+	}
+	squat := map[string]bool{}
+	for _, c := range rep.Capabilities {
+		if c.RuleID == rules.ProvTyposquat {
+			squat[strings.TrimPrefix(c.Detail, "provider:")] = true
+		}
+	}
+	names := make([]string, 0, len(provs))
+	for p := range provs {
+		short := p
+		if parts := strings.Split(p, "/"); len(parts) == 3 {
+			short = parts[1] + "/" + parts[2]
+		}
+		if squat[short] {
+			names = append(names, st.c(bold+mag, short+" ✗ typosquat"))
+		} else {
+			names = append(names, short+" ✓")
+		}
+	}
+	sort.Strings(names)
+	line := fmt.Sprintf("Checked %s (%d third-party, %s)", plural(len(rep.Modules), "module", "modules"), third, plural(files, "file", "files"))
+	if len(names) > 0 {
+		line += fmt.Sprintf(" and %s: %s", plural(len(names), "provider", "providers"), strings.Join(names, ", "))
+	}
+	return st.c(dim, line+".")
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+func countRule(caps []model.Capability, id string) int {
+	n := 0
+	for _, c := range caps {
+		if c.RuleID == id {
+			n++
+		}
+	}
+	return n
 }
 
 func summary(counts map[model.Severity]int, st Style) string {

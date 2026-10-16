@@ -30,8 +30,10 @@ func TestScanBenignIsClean(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d\n%s", code, out)
 	}
-	if !strings.Contains(out, "2 modules, 0 capabilities") {
-		t.Errorf("unexpected output:\n%s", out)
+	for _, want := range []string{"Checked 2 modules (1 third-party", "1 provider: hashicorp/aws ✓", "No capabilities found."} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in output:\n%s", want, out)
+		}
 	}
 }
 
@@ -311,5 +313,18 @@ func TestNestedModuleAnchorsToOutermostCall(t *testing.T) {
 		if loc.ArtifactLocation.URI != "infra/main.tf" || loc.Region.StartLine != 3 {
 			t.Errorf("%s anchored at %s:%d, want infra/main.tf:3", r.RuleID, loc.ArtifactLocation.URI, loc.Region.StartLine)
 		}
+	}
+}
+
+func TestSummaryFlagsTyposquatAndUndownloadedModules(t *testing.T) {
+	_, out, _ := runCLI(t, "scan", after, "--no-color")
+	if !strings.Contains(out, "kreuzwenker/docker ✗ typosquat") {
+		t.Errorf("typosquat not marked in summary:\n%s", out)
+	}
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.tf"), []byte("module \"vpc\" {\n  source  = \"terraform-aws-modules/vpc/aws\"\n  version = \"5.8.1\"\n}\n"), 0o644)
+	_, out, _ = runCLI(t, "scan", dir, "--no-color")
+	if !strings.Contains(out, "1 remote module not analyzed") {
+		t.Errorf("missing init hint:\n%s", out)
 	}
 }
