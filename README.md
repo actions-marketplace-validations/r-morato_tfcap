@@ -83,7 +83,12 @@ echo 'export PATH="$PATH:$(go env GOPATH)/bin"' >> ~/.zshrc && source ~/.zshrc
 
 The Windows Go installer usually adds its folder to PATH for you. Check it works with `tfcap version`.
 
-From v0.1.0 onwards, prebuilt binaries for Linux, macOS and Windows will be attached to each [release](https://github.com/r-morato/tfcap/releases), so you won't need Go installed.
+Prebuilt binaries for Linux, macOS and Windows (Intel and ARM) are attached to each [release](https://github.com/r-morato/tfcap/releases) if you'd rather not install Go. Each release also has a `checksums.txt`.
+
+## Try it in two minutes
+
+- **[`examples/testkit`](examples/testkit)**: ten small, defused Terraform configurations, one per kind of risk, and a `run-all.sh` that checks tfcap catches each one.
+- **[`examples/realworld-lab`](examples/realworld-lab)**: a hands-on lab with a real `terraform init`. A module maintainer gets compromised, the tag you pinned is quietly moved to malicious code, Terraform downloads it without a warning, and `tfcap verify` stops it before `plan`. Needs git and Terraform or OpenTofu; no cloud account.
 
 ## Quick start
 
