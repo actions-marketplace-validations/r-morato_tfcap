@@ -27,6 +27,9 @@ type ModuleCall struct {
 	Version string
 	File    string
 	Line    int
+	// PinLine is the line a version bump changes: `version` if present,
+	// otherwise `source` (git refs live there), otherwise the block header.
+	PinLine int
 }
 
 // Result is the outcome of analyzing one module directory.
@@ -537,11 +540,14 @@ func (a *analyzer) moduleCall(b *hclsyntax.Block, addr string) {
 	if len(b.Labels) > 0 {
 		call.Name = b.Labels[0]
 	}
+	call.PinLine = call.Line
 	if at, ok := attr(b, "source"); ok {
 		call.Source, _ = staticString(at.Expr)
+		call.PinLine = at.SrcRange.Start.Line
 	}
 	if at, ok := attr(b, "version"); ok {
 		call.Version, _ = staticString(at.Expr)
+		call.PinLine = at.SrcRange.Start.Line
 	}
 	a.res.Calls = append(a.res.Calls, call)
 	a.checkSource(call, addr, b.TypeRange)

@@ -72,6 +72,7 @@ runs:
         FAIL_ON: ${{ inputs.fail-on }}
         MIN_SEV: ${{ inputs.min-severity }}
         THIRD: ${{ inputs.third-party-only }}
+        WD: ${{ inputs.working-directory }}
       run: |
         set +e
         case "$MODE" in
@@ -81,7 +82,7 @@ runs:
         extra=()
         if [ "$MODE" = scan ] && [ "$THIRD" = "true" ]; then extra+=(--third-party-only); fi
         md=markdown; [ "$MODE" = scan ] && md=text
-        tfcap "$MODE" . --format sarif --output "$RUNNER_TEMP/tfcap.sarif" --fail-on none --min-severity "$MIN_SEV" "${extra[@]}"
+        tfcap "$MODE" . --format sarif --output "$RUNNER_TEMP/tfcap.sarif" --sarif-base "$WD" --fail-on none --min-severity "$MIN_SEV" "${extra[@]}"
         tfcap "$MODE" . --format "$md" --output "$RUNNER_TEMP/tfcap.md" --fail-on none --min-severity "$MIN_SEV" --no-color "${extra[@]}"
         tfcap "$MODE" . --fail-on "$FAIL_ON" --min-severity "$MIN_SEV" "${extra[@]}"
         code=$?

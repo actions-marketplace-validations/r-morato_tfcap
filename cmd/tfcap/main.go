@@ -93,13 +93,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 // common flags
 type common struct {
-	format  string
-	out     string
-	failOn  string
-	minSev  string
-	noColor bool
-	dataDir string
-	third   bool
+	format    string
+	out       string
+	failOn    string
+	minSev    string
+	noColor   bool
+	dataDir   string
+	third     bool
+	sarifBase string
 }
 
 func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
@@ -110,6 +111,15 @@ func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
 	fs.BoolVar(&c.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	fs.StringVar(&c.dataDir, "data-dir", "", "Terraform data dir (default: $TF_DATA_DIR or .terraform)")
 	fs.BoolVar(&c.third, "third-party-only", false, "only report capabilities from third-party (non-local) modules")
+	fs.StringVar(&c.sarifBase, "sarif-base", "", "SARIF only: path of the scanned directory relative to the repository root (default: the directory argument)")
+}
+
+// sarifURIBase returns the prefix for SARIF artifact URIs.
+func (c *common) sarifURIBase(dir string) string {
+	if c.sarifBase != "" {
+		return filepath.ToSlash(c.sarifBase)
+	}
+	return filepath.ToSlash(dir)
 }
 
 func (c *common) writer(stdout io.Writer) (io.Writer, func() error, error) {
@@ -235,7 +245,7 @@ func cmdScan(args []string, stdout, stderr io.Writer) error {
 	case "json":
 		err = output.JSON(w, rep)
 	case "sarif":
-		err = output.SARIF(w, rep.Capabilities, rep.Modules, filepath.ToSlash(dirArg(fs)), version)
+		err = output.SARIF(w, rep.Capabilities, rep.Modules, c.sarifURIBase(dirArg(fs)), version)
 	default:
 		err = fmt.Errorf("unknown --format %q", c.format)
 	}
@@ -325,7 +335,7 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 		if st, e := os.Stat(uriBase); e == nil && !st.IsDir() {
 			uriBase = head.Root
 		}
-		err = output.SARIF(w, d.Added, head.Modules, filepath.ToSlash(uriBase), version)
+		err = output.SARIF(w, d.Added, head.Modules, c.sarifURIBase(uriBase), version)
 	default:
 		err = fmt.Errorf("unknown --format %q", c.format)
 	}
@@ -411,7 +421,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	case "markdown", "md":
 		output.VerifyMarkdown(w, v)
 	case "sarif":
-		err = output.SARIF(w, v.Findings, rep.Modules, filepath.ToSlash(dir), version)
+		err = output.SARIF(w, v.Findings, rep.Modules, c.sarifURIBase(dir), version)
 	default:
 		err = fmt.Errorf("unknown --format %q", c.format)
 	}

@@ -45,6 +45,7 @@ func (a *analyzer) analyzeJSON(src []byte) {
 				src, _ := body["source"].(string)
 				ver, _ := body["version"].(string)
 				call := ModuleCall{Name: name, Source: src, Version: ver, File: a.file, Line: a.lineOf(`"` + name + `"`)}
+				call.PinLine = call.Line
 				a.res.Calls = append(a.res.Calls, call)
 				a.checkSource(call, addr, a.rangeOf(`"`+name+`"`))
 				rest := map[string]any{}

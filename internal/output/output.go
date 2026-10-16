@@ -409,24 +409,42 @@ type sarifRegion struct {
 // prefix uriBase).
 func SARIF(w io.Writer, caps []model.Capability, modules []model.Module, uriBase, version string) error {
 	dirs := map[string]string{}
+	mods := map[string]model.Module{}
 	for _, m := range modules {
 		dirs[m.Key] = m.Dir
+		mods[m.Key] = m
 	}
 	used := map[string]bool{}
 	results := []sarifResult{}
 	for _, c := range caps {
 		used[c.RuleID] = true
 		uri := path.Clean(path.Join(uriBase, dirs[c.Module], c.File))
-		loc := sarifPhysical{ArtifactLocation: sarifArtifact{URI: uri}}
-		if c.Line > 0 {
-			loc.Region = &sarifRegion{StartLine: c.Line}
-		}
+		line := c.Line
+		msg := c.Message
 		props := map[string]any{"phase": c.Phase, "module": displayKey(c.Module), "severity": c.Severity.String()}
+		// Downloaded third-party module files are not in the repository,
+		// so code scanning cannot show alerts on them. Point at the
+		// `module` block that pins the module instead (the line a version
+		// bump changes), and keep the real location in the message.
+		if m, ok := mods[c.Module]; ok && m.ThirdParty && m.Anchor != nil {
+			inner := c.File
+			if c.Line > 0 {
+				inner = fmt.Sprintf("%s:%d", c.File, c.Line)
+			}
+			msg = fmt.Sprintf("%s [%s, %s]", c.Message, displayKey(c.Module), joinNonEmpty(" ", c.Address, inner))
+			props["module_file"] = inner
+			uri = path.Clean(path.Join(uriBase, m.Anchor.File))
+			line = m.Anchor.Line
+		}
+		loc := sarifPhysical{ArtifactLocation: sarifArtifact{URI: uri}}
+		if line > 0 {
+			loc.Region = &sarifRegion{StartLine: line}
+		}
 		if len(c.Tags) > 0 {
 			props["tags"] = c.Tags
 		}
 		results = append(results, sarifResult{
-			RuleID: c.RuleID, Level: sarifLevel(c.Severity), Message: sarifText{c.Message},
+			RuleID: c.RuleID, Level: sarifLevel(c.Severity), Message: sarifText{msg},
 			Locations:           []sarifLocation{{loc}},
 			PartialFingerprints: map[string]string{"tfcap/v1": c.Fingerprint()},
 			Properties:          props,

@@ -95,35 +95,68 @@ func TestDiffFromJSONReports(t *testing.T) {
 	}
 }
 
-func TestSARIF(t *testing.T) {
-	code, out, _ := runCLI(t, "scan", after, "--format", "sarif")
+type sarifOut struct {
+	Version string `json:"version"`
+	Runs    []struct {
+		Results []struct {
+			RuleID  string `json:"ruleId"`
+			Message struct {
+				Text string `json:"text"`
+			} `json:"message"`
+			Locations []struct {
+				PhysicalLocation struct {
+					ArtifactLocation struct {
+						URI string `json:"uri"`
+					} `json:"artifactLocation"`
+					Region struct {
+						StartLine int `json:"startLine"`
+					} `json:"region"`
+				} `json:"physicalLocation"`
+			} `json:"locations"`
+		} `json:"results"`
+	} `json:"runs"`
+}
+
+func runSARIF(t *testing.T, args ...string) sarifOut {
+	t.Helper()
+	code, out, errs := runCLI(t, args...)
 	if code != 0 {
-		t.Fatal(code)
+		t.Fatalf("exit %d: %s", code, errs)
 	}
-	var log struct {
-		Version string `json:"version"`
-		Runs    []struct {
-			Results []struct {
-				RuleID    string `json:"ruleId"`
-				Locations []struct {
-					PhysicalLocation struct {
-						ArtifactLocation struct {
-							URI string `json:"uri"`
-						} `json:"artifactLocation"`
-					} `json:"physicalLocation"`
-				} `json:"locations"`
-			} `json:"results"`
-		} `json:"runs"`
-	}
+	var log sarifOut
 	if err := json.Unmarshal([]byte(out), &log); err != nil {
 		t.Fatal(err)
 	}
 	if log.Version != "2.1.0" || len(log.Runs) != 1 || len(log.Runs[0].Results) == 0 {
-		t.Fatalf("bad sarif: %s", out[:200])
+		t.Fatalf("bad sarif: %.200s", out)
 	}
+	return log
+}
+
+// Downloaded module files are not in the repository, so third-party
+// findings must point at the `module` block in the user's own code: the
+// line a version bump changes (examples/.../after/main.tf:16 is `version`).
+func TestSARIFAnchorsThirdPartyFindingsToModuleCall(t *testing.T) {
+	log := runSARIF(t, "scan", after, "--format", "sarif")
+	for _, r := range log.Runs[0].Results {
+		loc := r.Locations[0].PhysicalLocation
+		if strings.Contains(loc.ArtifactLocation.URI, ".terraform") {
+			t.Fatalf("%s points into .terraform: %s", r.RuleID, loc.ArtifactLocation.URI)
+		}
+		if !strings.HasSuffix(loc.ArtifactLocation.URI, "upgrade-attack/after/main.tf") || loc.Region.StartLine != 16 {
+			t.Errorf("%s anchored at %s:%d, want after/main.tf:16", r.RuleID, loc.ArtifactLocation.URI, loc.Region.StartLine)
+		}
+		if !strings.Contains(r.Message.Text, "module.network") {
+			t.Errorf("message lacks the real location: %s", r.Message.Text)
+		}
+	}
+}
+
+func TestSARIFBase(t *testing.T) {
+	log := runSARIF(t, "scan", after, "--format", "sarif", "--sarif-base", "infra")
 	uri := log.Runs[0].Results[0].Locations[0].PhysicalLocation.ArtifactLocation.URI
-	if !strings.Contains(uri, ".terraform/modules/network/") {
-		t.Errorf("uri = %s", uri)
+	if uri != "infra/main.tf" {
+		t.Errorf("uri = %s, want infra/main.tf", uri)
 	}
 }
 
@@ -251,6 +284,32 @@ module "vpc" {
 	for _, want := range []string{"module.app", "TFCAP-EXEC-001", "TFCAP-SRC-006"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestNestedModuleAnchorsToOutermostCall(t *testing.T) {
+	dir := t.TempDir()
+	write := func(p, body string) {
+		t.Helper()
+		full := filepath.Join(dir, filepath.FromSlash(p))
+		os.MkdirAll(filepath.Dir(full), 0o755)
+		if err := os.WriteFile(full, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("main.tf", "module \"outer\" {\n  source  = \"acme/outer/aws\"\n  version = \"2.0.0\"\n}\n")
+	write(".terraform/modules/outer/main.tf", "module \"inner\" {\n  source = \"./modules/inner\"\n}\n")
+	write(".terraform/modules/outer/modules/inner/main.tf", "data \"external\" \"x\" { program = [\"true\"] }\n")
+	write(".terraform/modules/modules.json", `{"Modules":[{"Key":"","Source":"","Dir":"."},`+
+		`{"Key":"outer","Source":"registry.terraform.io/acme/outer/aws","Version":"2.0.0","Dir":".terraform/modules/outer"},`+
+		`{"Key":"outer.inner","Source":"./modules/inner","Dir":".terraform/modules/outer/modules/inner"}]}`)
+
+	log := runSARIF(t, "scan", dir, "--format", "sarif", "--sarif-base", "infra")
+	for _, r := range log.Runs[0].Results {
+		loc := r.Locations[0].PhysicalLocation
+		if loc.ArtifactLocation.URI != "infra/main.tf" || loc.Region.StartLine != 3 {
+			t.Errorf("%s anchored at %s:%d, want infra/main.tf:3", r.RuleID, loc.ArtifactLocation.URI, loc.Region.StartLine)
 		}
 	}
 }

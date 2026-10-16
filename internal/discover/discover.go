@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -96,6 +97,7 @@ func (s *scanner) fromManifest(m *manifest) {
 	for _, e := range m.Modules {
 		sources[e.Key] = e.Source
 	}
+	calls := map[string][]analyze.ModuleCall{} // module key -> calls made from it
 	for _, e := range m.Modules {
 		kind := model.SourceRoot
 		if e.Key != "" {
@@ -106,7 +108,39 @@ func (s *scanner) fromManifest(m *manifest) {
 		if !filepath.IsAbs(dir) {
 			dir = filepath.Join(s.root, filepath.FromSlash(dir))
 		}
-		s.analyzeModule(e.Key, e.Source, e.Version, kind, dir, third)
+		if res := s.analyzeModule(e.Key, e.Source, e.Version, kind, dir, third); res != nil {
+			calls[e.Key] = res.Calls
+		}
+	}
+	s.setAnchors(sources, calls)
+}
+
+// setAnchors gives every third-party module the location of the module
+// block in first-party code that brings it in. For nested modules that is
+// the call of their outermost third-party ancestor.
+func (s *scanner) setAnchors(sources map[string]string, calls map[string][]analyze.ModuleCall) {
+	dirs := map[string]string{}
+	for _, m := range s.rep.Modules {
+		dirs[m.Key] = m.Dir
+	}
+	for i := range s.rep.Modules {
+		m := &s.rep.Modules[i]
+		if !m.ThirdParty {
+			continue
+		}
+		parts := strings.Split(m.Key, ".")
+		for n := 1; n <= len(parts); n++ {
+			parent := strings.Join(parts[:n-1], ".")
+			if isThirdParty(parent, sources) {
+				continue
+			}
+			for _, c := range calls[parent] {
+				if c.Name == parts[n-1] {
+					m.Anchor = &model.Location{File: path.Join(dirs[parent], filepath.ToSlash(c.File)), Line: c.PinLine}
+				}
+			}
+			break
+		}
 	}
 }
 

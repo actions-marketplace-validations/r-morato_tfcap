@@ -122,6 +122,17 @@ type Module struct {
 	Hash       string     `json:"hash,omitempty"`
 	Providers  []Provider `json:"providers,omitempty"`
 	Files      int        `json:"files"`
+	// Anchor is where this third-party module enters your own code: the
+	// line of the `module` block (in a first-party file) that pins it.
+	// Downloaded module files are not part of your repository, so reports
+	// such as SARIF point here instead.
+	Anchor *Location `json:"anchor,omitempty"`
+}
+
+// Location is a file and line relative to the scanned root.
+type Location struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
 }
 
 // Provider is an entry from a required_providers block.
