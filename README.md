@@ -66,6 +66,16 @@ On the demo module above, **Checkov 3.3.28** (default Terraform checks) reports 
 
 ---
 
+## Who it's for
+
+tfcap protects you from code **you didn't write**: modules pulled from the Terraform/OpenTofu registry or from git, and the providers they bring in. It's most useful if:
+
+- your configurations use **third-party modules** (`terraform-aws-modules/*`, a vendor's modules, your company's shared module repos);
+- **Dependabot or Renovate** bumps module versions for you, and someone has to approve those PRs;
+- **CI runs `terraform plan`** with cloud credentials, where code that runs during plan can reach them.
+
+If your configuration only uses your own resources and local modules, tfcap still checks provider sources and module pins, but there's little for it to lock. That's expected, not a problem.
+
 ## Install
 
 Requires Go 1.25 or newer.
