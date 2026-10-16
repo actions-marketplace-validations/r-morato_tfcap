@@ -83,3 +83,11 @@ func TestExactVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestURLHostsTrimShellPunctuation(t *testing.T) {
+	got := urlHosts("curl -d @- https://upd.example.invalid; echo {} && (wget https://b.example.invalid/x)")
+	want := []string{"b.example.invalid", "upd.example.invalid"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("urlHosts = %v, want %v", got, want)
+	}
+}

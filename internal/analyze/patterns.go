@@ -101,6 +101,9 @@ func urlHosts(s string) []string {
 }
 
 func hostOf(raw string) string {
+	// URLs inside shell commands often end with punctuation that belongs to
+	// the shell, not the URL: "https://x.example;" or "(https://x.example)".
+	raw = strings.TrimRight(raw, ";,.)]}'\"|&")
 	// Cut at interpolation; a partially dynamic host is not a static host.
 	if i := strings.Index(raw, "${"); i >= 0 {
 		raw = raw[:i]
