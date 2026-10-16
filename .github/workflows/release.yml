@@ -20,3 +20,11 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Point the major version tag (e.g. v0) at this release
+        if: ${{ !contains(github.ref_name, '-') }} # skip pre-releases such as v1.0.0-rc.1
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          major="${TAG%%.*}"
+          git tag -f "$major" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$major"
