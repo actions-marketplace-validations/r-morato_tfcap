@@ -1,4 +1,4 @@
-name: tfcap
+name: tfcap Plan Guard
 description: Inventory Terraform/OpenTofu module capabilities and catch risky module upgrades and tag mutation.
 author: r-morato
 branding:
