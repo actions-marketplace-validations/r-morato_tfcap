@@ -120,6 +120,7 @@ func Report(w io.Writer, rep *model.Report, st Style) {
 	} else {
 		fmt.Fprintf(w, "%s %s\n", plural(len(rep.Capabilities), "capability", "capabilities"), summary(counts, st))
 	}
+	acceptedLine(w, rep.Accepted, st)
 	if n := countRule(rep.Capabilities, rules.SrcNotDownloaded); n > 0 {
 		fmt.Fprintln(w, st.c(yellow, fmt.Sprintf("%s not analyzed because it is not downloaded: run `terraform init` (or `tofu init`) first.",
 			plural(n, "remote module", "remote modules"))))
@@ -357,6 +358,7 @@ func Verify(w io.Writer, v *lock.Result, st Style) {
 		fmt.Fprintf(w, "%s %s\n", st.c(green, "ok      "), st.c(dim, plural(okProviders, "provider", "providers")+" unchanged"))
 	}
 	fmt.Fprintln(w)
+	acceptedLine(w, v.Accepted, st)
 	if len(v.Findings) == 0 {
 		fmt.Fprintln(w, st.c(green, "All third-party module capabilities match the lock."))
 		return
@@ -404,6 +406,26 @@ func VerifyMarkdown(w io.Writer, v *lock.Result) {
 	}
 	fmt.Fprintln(w)
 	capsTable(w, "Unreviewed capabilities", v.Findings, true)
+	if len(v.Accepted) > 0 {
+		fmt.Fprintf(w, "\n<details><summary>%s accepted by tfcap.hcl</summary>\n\n", plural(len(v.Accepted), "finding", "findings"))
+		fmt.Fprintln(w, "| Severity | Rule | Where | Approved by | Expires | Reason |")
+		fmt.Fprintln(w, "|---|---|---|---|---|---|")
+		for _, a := range v.Accepted {
+			fmt.Fprintf(w, "| %s | `%s` | %s | %s | %s | %s |\n", a.Severity, a.RuleID,
+				mdEscape(joinNonEmpty(" ", displayKey(a.Module), a.Address)), mdEscape(a.ApprovedBy), a.Expires, mdEscape(a.Reason))
+		}
+		fmt.Fprintln(w, "\n</details>")
+	}
+}
+
+// acceptedLine notes findings hidden by policy exceptions, so a quiet
+// result never hides the fact that something was waived.
+func acceptedLine(w io.Writer, acc []model.Accepted, st Style) {
+	if len(acc) == 0 {
+		return
+	}
+	fmt.Fprintln(w, st.c(dim, fmt.Sprintf("%s accepted by tfcap.hcl exceptions (use --no-policy to show them).",
+		plural(len(acc), "finding", "findings"))))
 }
 
 // verLabel shows a registry version, or a git ref when the version lives

@@ -166,7 +166,17 @@ type Report struct {
 	Capabilities []Capability `json:"capabilities"`
 	// ProviderLocks are the provider pins from .terraform.lock.hcl.
 	ProviderLocks []ProviderLock `json:"provider_locks,omitempty"`
-	Errors        []string       `json:"errors,omitempty"`
+	// Accepted are findings removed by tfcap.hcl exceptions.
+	Accepted []Accepted `json:"accepted,omitempty"`
+	Errors   []string   `json:"errors,omitempty"`
+}
+
+// Accepted is a finding that a tfcap.hcl exception accepted.
+type Accepted struct {
+	Capability
+	Reason     string `json:"reason"`
+	ApprovedBy string `json:"approved_by"`
+	Expires    string `json:"expires"`
 }
 
 // ProviderLock is one provider block of .terraform.lock.hcl.

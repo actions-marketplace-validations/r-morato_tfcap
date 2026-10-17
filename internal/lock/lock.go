@@ -156,6 +156,8 @@ type Result struct {
 	// Findings are capabilities that were not reviewed: mutation alerts plus
 	// every capability that is new relative to the lock.
 	Findings []model.Capability `json:"findings"`
+	// Accepted are findings removed by tfcap.hcl exceptions.
+	Accepted []model.Accepted `json:"accepted,omitempty"`
 }
 
 // Verify compares a fresh scan against the lock.

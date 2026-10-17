@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"runtime/debug"
 	"strings"
+	"time"
 
 	"github.com/r-morato/tfcap/internal/diff"
 	"github.com/r-morato/tfcap/internal/discover"
@@ -21,6 +22,7 @@ import (
 	"github.com/r-morato/tfcap/internal/model"
 	"github.com/r-morato/tfcap/internal/output"
 	"github.com/r-morato/tfcap/internal/pin"
+	"github.com/r-morato/tfcap/internal/policy"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -107,6 +109,8 @@ type common struct {
 	dataDir   string
 	third     bool
 	sarifBase string
+	policy    string
+	noPolicy  bool
 }
 
 func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
@@ -114,6 +118,8 @@ func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
 	fs.StringVar(&c.out, "output", "", "write output to file instead of stdout")
 	fs.StringVar(&c.failOn, "fail-on", defFailOn, "exit 1 if any finding is at or above this severity (none|info|low|medium|high|critical)")
 	fs.StringVar(&c.minSev, "min-severity", "info", "hide findings below this severity")
+	fs.StringVar(&c.policy, "policy", "", "policy file with accepted findings (default: <dir>/tfcap.hcl if present)")
+	fs.BoolVar(&c.noPolicy, "no-policy", false, "ignore tfcap.hcl exceptions")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	fs.StringVar(&c.dataDir, "data-dir", "", "Terraform data dir (default: $TF_DATA_DIR or .terraform)")
 	fs.BoolVar(&c.third, "third-party-only", false, "only report capabilities from third-party (non-local) modules")
@@ -164,6 +170,33 @@ func (c *common) filter(caps []model.Capability) ([]model.Capability, error) {
 	}
 	return out, nil
 }
+
+// applyPolicy removes findings accepted by tfcap.hcl and prints policy
+// warnings (expired or soon-to-expire exceptions) to stderr.
+func (c *common) applyPolicy(dir string, caps []model.Capability, stderr io.Writer) ([]model.Capability, []model.Accepted, error) {
+	if c.noPolicy {
+		return caps, nil, nil
+	}
+	path := c.policy
+	if path == "" {
+		path = filepath.Join(dir, policy.FileName)
+	}
+	p, err := policy.Load(path, now())
+	if err != nil {
+		return nil, nil, err
+	}
+	if p == nil && c.policy != "" {
+		return nil, nil, fmt.Errorf("policy file %s not found", c.policy)
+	}
+	o := p.Apply(caps, now())
+	for _, w := range o.Warnings {
+		fmt.Fprintln(stderr, "tfcap: warning:", w)
+	}
+	return o.Kept, o.Accepted, nil
+}
+
+// now is a variable so tests can pin the clock.
+var now = time.Now
 
 func (c *common) gate(caps []model.Capability) error {
 	if c.failOn == "" || c.failOn == "none" {
@@ -236,6 +269,9 @@ func cmdScan(args []string, stdout, stderr io.Writer) error {
 	}
 	rep, err := discover.Scan(dirArg(fs), discover.Options{DataDir: c.dataDir, ThirdPartyOnly: c.third, Version: version})
 	if err != nil {
+		return err
+	}
+	if rep.Capabilities, rep.Accepted, err = c.applyPolicy(dirArg(fs), rep.Capabilities, stderr); err != nil {
 		return err
 	}
 	if rep.Capabilities, err = c.filter(rep.Capabilities); err != nil {
@@ -476,6 +512,9 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	v := lock.Verify(lf, rep)
+	if v.Findings, v.Accepted, err = c.applyPolicy(dir, v.Findings, stderr); err != nil {
+		return err
+	}
 	if v.Findings, err = c.filter(v.Findings); err != nil {
 		return err
 	}
