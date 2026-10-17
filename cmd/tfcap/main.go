@@ -23,6 +23,7 @@ import (
 	"github.com/r-morato/tfcap/internal/output"
 	"github.com/r-morato/tfcap/internal/pin"
 	"github.com/r-morato/tfcap/internal/policy"
+	"github.com/r-morato/tfcap/internal/sbom"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -36,6 +37,8 @@ Usage:
   tfcap lock   [dir]              Write tfcap.lock.json pinning module content + reviewed capabilities
   tfcap verify [dir]              Check modules against tfcap.lock.json (tag mutation, new capabilities)
   tfcap pin    [dir]              Rewrite git module sources to the commit they resolved to
+  tfcap sbom   [dir]              Print a CycloneDX SBOM of modules and providers
+  tfcap validate-lock <file>      Strictly check a tfcap.lock.json file
   tfcap rules                     List detection rules
   tfcap version                   Print version
 
@@ -75,6 +78,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdRules(args[1:], stdout, stderr)
 	case "pin":
 		err = cmdPin(args[1:], stdout, stderr)
+	case "sbom":
+		err = cmdSBOM(args[1:], stdout, stderr)
 	case "validate-lock":
 		err = cmdValidateLock(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -617,4 +622,58 @@ func shortSource(s string) string {
 		return "ref=" + ref
 	}
 	return strings.TrimPrefix(s, "registry.terraform.io/")
+}
+
+// ---- sbom ----
+
+func cmdSBOM(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("sbom", "tfcap sbom [dir] [flags]", stderr)
+	out := fs.String("output", "", "write to file instead of stdout")
+	fs.StringVar(out, "o", "", "shorthand for --output")
+	dataDir := fs.String("data-dir", "", "Terraform data dir (default: <dir>/.terraform, or $TF_DATA_DIR)")
+	name := fs.String("name", "", "name of the root component (default: the directory name)")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	dir := dirArg(fs)
+	rep, err := discover.Scan(dir, discover.Options{DataDir: *dataDir, Version: version})
+	if err != nil {
+		return err
+	}
+	if *name == "" {
+		abs, _ := filepath.Abs(dir)
+		*name = filepath.Base(abs)
+	}
+	// SOURCE_DATE_EPOCH makes the output reproducible.
+	ts := now()
+	if e := os.Getenv("SOURCE_DATE_EPOCH"); e != "" {
+		var sec int64
+		if _, err := fmt.Sscan(e, &sec); err != nil {
+			return fmt.Errorf("invalid SOURCE_DATE_EPOCH %q", e)
+		}
+		ts = time.Unix(sec, 0)
+	}
+	w := stdout
+	if *out != "" {
+		f, err := os.Create(*out)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		w = f
+	}
+	if n := countThirdParty(rep); n == 0 && len(rep.ProviderLocks) == 0 {
+		fmt.Fprintln(stderr, "tfcap: warning: no third-party modules or locked providers found. Did you run `terraform init`?")
+	}
+	return sbom.Write(w, sbom.Build(rep, *name, version, ts))
+}
+
+func countThirdParty(rep *model.Report) int {
+	n := 0
+	for _, m := range rep.Modules {
+		if m.ThirdParty {
+			n++
+		}
+	}
+	return n
 }
