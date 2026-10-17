@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2"
+
 	"github.com/r-morato/tfcap/internal/model"
 )
 
@@ -194,3 +196,12 @@ func levenshtein(a, b string) int {
 
 // officialNamespaces are namespaces we do not bother reporting as community.
 var officialNamespaces = map[string]bool{"hashicorp": true, "opentofu": true}
+
+// SourceFindings checks a module source the same way a module block's
+// source is checked. It is used for sources that live outside .tf files,
+// such as the terraform.source of a terragrunt.hcl.
+func SourceFindings(module, file, addr string, line int, source, version string) []model.Capability {
+	a := &analyzer{module: module, res: &Result{}, seen: map[string]bool{}, file: file}
+	a.checkSource(ModuleCall{Source: source, Version: version}, addr, hcl.Range{Start: hcl.Pos{Line: line}})
+	return a.res.Capabilities
+}

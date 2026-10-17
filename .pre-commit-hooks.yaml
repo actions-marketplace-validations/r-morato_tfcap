@@ -1,0 +1,21 @@
+# pre-commit hooks for tfcap. See README.md, "pre-commit".
+- id: tfcap-verify
+  name: tfcap verify
+  description: Check third-party Terraform modules and providers against tfcap.lock.json.
+  entry: tfcap verify
+  language: golang
+  pass_filenames: false
+  files: '(\.(tf|tofu|tf\.json|tofu\.json|hcl)|tfcap\.lock\.json)$'
+- id: tfcap-validate-lock
+  name: tfcap validate-lock
+  description: Strictly validate tfcap.lock.json (schema, hashes, no unknown fields).
+  entry: tfcap validate-lock
+  language: golang
+  files: '(^|/)tfcap\.lock\.json$'
+- id: tfcap-pin-check
+  name: tfcap pin --check
+  description: Fail if a git module source is not pinned to the commit it resolved to.
+  entry: tfcap pin --check
+  language: golang
+  pass_filenames: false
+  files: '\.(tf|tofu)$'

@@ -38,7 +38,7 @@ Usage:
   tfcap verify [dir]              Check modules against tfcap.lock.json (tag mutation, new capabilities)
   tfcap pin    [dir]              Rewrite git module sources to the commit they resolved to
   tfcap sbom   [dir]              Print a CycloneDX SBOM of modules and providers
-  tfcap validate-lock <file>      Strictly check a tfcap.lock.json file
+  tfcap validate-lock <file>...   Strictly check a tfcap.lock.json file
   tfcap rules                     List detection rules
   tfcap version                   Print version
 
@@ -561,12 +561,18 @@ func cmdRules(args []string, stdout, stderr io.Writer) error {
 // cmdValidateLock strictly checks a lock file without trusting it; used by
 // the GitHub Action before committing a lock file produced by another job.
 func cmdValidateLock(args []string, stdout, stderr io.Writer) error {
-	if len(args) != 1 {
-		fmt.Fprintln(stderr, "Usage: tfcap validate-lock <file>")
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "Usage: tfcap validate-lock <file>...")
 		return exitError{2}
 	}
-	if err := lock.Validate(args[0]); err != nil {
-		fmt.Fprintln(stderr, "tfcap:", err)
+	bad := false
+	for _, a := range args {
+		if err := lock.Validate(a); err != nil {
+			fmt.Fprintln(stderr, "tfcap:", err)
+			bad = true
+		}
+	}
+	if bad {
 		return exitError{1}
 	}
 	fmt.Fprintln(stdout, "ok")

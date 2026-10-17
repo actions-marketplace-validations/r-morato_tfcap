@@ -40,6 +40,8 @@ type Options struct {
 	ThirdPartyOnly bool
 	// Version is stamped into the report.
 	Version string
+
+	inTerragrunt bool // scanning Terragrunt's working copy; don't recurse
 }
 
 // Scan discovers and analyzes every module under root.
@@ -70,6 +72,9 @@ func Scan(root string, opts Options) (*model.Report, error) {
 		s.fromManifest(m)
 	} else {
 		s.walkLocal("", abs, model.SourceRoot, ".", "", false)
+	}
+	if !opts.inTerragrunt {
+		s.scanTerragrunt()
 	}
 	if pl, err := readProviderLock(abs); err != nil {
 		rep.Errors = append(rep.Errors, ".terraform.lock.hcl: "+err.Error())
@@ -261,7 +266,11 @@ func displayKey(k string) string {
 // sorted relative paths and file contents, ignoring VCS and Terraform
 // working directories. It is independent of mtimes, permissions and CRLF
 // vs LF line endings.
-func HashDir(dir string) (string, error) {
+func HashDir(dir string) (string, error) { return hashDirExcluding(dir, nil) }
+
+// hashDirExcluding is HashDir, skipping the named top-level files and any
+// .terragrunt-* bookkeeping files.
+func hashDirExcluding(dir string, skipTop map[string]bool) (string, error) {
 	var files []string
 	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -271,6 +280,9 @@ func HashDir(dir string) (string, error) {
 			if p != dir && (d.Name() == ".git" || d.Name() == ".terraform") {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if filepath.Dir(p) == dir && skipTop[d.Name()] || skipTop != nil && strings.HasPrefix(d.Name(), ".terragrunt-") {
 			return nil
 		}
 		if d.Type().IsRegular() {
