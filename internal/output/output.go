@@ -340,6 +340,22 @@ func Verify(w io.Writer, v *lock.Result, st Style) {
 		}
 		fmt.Fprintf(w, "%s %s %s\n", label, displayKey(m.Key), st.c(dim, extra))
 	}
+	okProviders := 0
+	for _, p := range v.Providers {
+		switch p.Status {
+		case "ok":
+			okProviders++
+		case "mutated":
+			fmt.Fprintf(w, "%s provider %s %s\n", st.c(bold+mag, "MUTATED "), p.Address, st.c(dim, p.CurrentVersion))
+		case "upgraded":
+			fmt.Fprintf(w, "%s provider %s %s\n", st.c(yellow, "upgraded"), p.Address, st.c(dim, p.LockedVersion+" → "+p.CurrentVersion))
+		default:
+			fmt.Fprintf(w, "%s provider %s %s\n", st.c(yellow, fmt.Sprintf("%-8s", p.Status)), p.Address, st.c(dim, p.CurrentVersion+p.LockedVersion))
+		}
+	}
+	if okProviders > 0 {
+		fmt.Fprintf(w, "%s %s\n", st.c(green, "ok      "), st.c(dim, plural(okProviders, "provider", "providers")+" unchanged"))
+	}
 	fmt.Fprintln(w)
 	if len(v.Findings) == 0 {
 		fmt.Fprintln(w, st.c(green, "All third-party module capabilities match the lock."))
@@ -371,6 +387,20 @@ func VerifyMarkdown(w io.Writer, v *lock.Result) {
 			status = "🟣 **MUTATED**"
 		}
 		fmt.Fprintf(w, "| `%s` | %s | %s |\n", displayKey(m.Key), status, mdEscape(ver))
+	}
+	for _, p := range v.Providers {
+		if p.Status == "ok" {
+			continue
+		}
+		status := p.Status
+		if status == "mutated" {
+			status = "🟣 **MUTATED**"
+		}
+		ver := p.CurrentVersion
+		if p.Status == "upgraded" {
+			ver = p.LockedVersion + " → " + p.CurrentVersion
+		}
+		fmt.Fprintf(w, "| provider `%s` | %s | %s |\n", p.Address, status, mdEscape(ver))
 	}
 	fmt.Fprintln(w)
 	capsTable(w, "Unreviewed capabilities", v.Findings, true)

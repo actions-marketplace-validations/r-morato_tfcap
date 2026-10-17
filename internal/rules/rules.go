@@ -59,6 +59,9 @@ const (
 	ProvUnofficialNS = "TFCAP-PROV-002"
 	ProvCustomHost   = "TFCAP-PROV-003"
 	ProvExecCapable  = "TFCAP-PROV-004"
+	ProvNew          = "TFCAP-PROV-005"
+	ProvUpgraded     = "TFCAP-PROV-006"
+	ProvMutated      = "TFCAP-PROV-007"
 )
 
 var catalog = map[string]Rule{
@@ -162,6 +165,15 @@ var catalog = map[string]Rule{
 	ProvCustomHost: {ProvCustomHost, "provider-custom-host", model.Medium, model.PhaseInit,
 		"Provider is installed from a non-default registry host.",
 		"Providers from custom hosts bypass the public registry's publisher verification."},
+	ProvNew: {ProvNew, "provider-new", model.Medium, model.PhaseInit,
+		"A provider was added since the lock was reviewed.",
+		"Provider binaries run with the full permissions of Terraform. Check the publisher before accepting a new one."},
+	ProvUpgraded: {ProvUpgraded, "provider-upgraded", model.Low, model.PhaseInit,
+		"A provider version changed since the lock was reviewed.",
+		"Routine, but worth a glance at the provider's changelog."},
+	ProvMutated: {ProvMutated, "provider-content-changed", model.Critical, model.PhaseInit,
+		"A provider's checksums changed while its version stayed the same.",
+		"The registry's checksums for a given provider version never change. Different hashes for the same version mean a different binary: a compromised release or registry."},
 	ProvExecCapable: {ProvExecCapable, "exec-capable-provider", model.Medium, model.PhasePlan,
 		"Requires a provider whose purpose is running programs or making requests.",
 		"Providers like `hashicorp/external`, `hashicorp/http` or `scottwinkler/shell` exist to execute code or talk to the network."},

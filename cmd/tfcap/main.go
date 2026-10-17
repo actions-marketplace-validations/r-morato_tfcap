@@ -397,9 +397,15 @@ func cmdLock(args []string, stdout, stderr io.Writer) error {
 			selected[k] = true
 		}
 		var mutated []string
-		for _, m := range lock.Verify(old, rep).Modules {
+		v := lock.Verify(old, rep)
+		for _, m := range v.Modules {
 			if m.Status == lock.StatusMutated && (len(only) == 0 || selected[m.Key]) {
 				mutated = append(mutated, displayModule(m.Key))
+			}
+		}
+		for _, p := range v.Providers {
+			if p.Status == "mutated" && len(only) == 0 {
+				mutated = append(mutated, "provider "+p.Address)
 			}
 		}
 		if len(mutated) > 0 {

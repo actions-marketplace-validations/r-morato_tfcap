@@ -164,7 +164,17 @@ type Report struct {
 	Root         string       `json:"root"`
 	Modules      []Module     `json:"modules"`
 	Capabilities []Capability `json:"capabilities"`
-	Errors       []string     `json:"errors,omitempty"`
+	// ProviderLocks are the provider pins from .terraform.lock.hcl.
+	ProviderLocks []ProviderLock `json:"provider_locks,omitempty"`
+	Errors        []string       `json:"errors,omitempty"`
+}
+
+// ProviderLock is one provider block of .terraform.lock.hcl.
+type ProviderLock struct {
+	Address string   `json:"address"`
+	Version string   `json:"version"`
+	Hashes  []string `json:"hashes"`
+	Line    int      `json:"line,omitempty"`
 }
 
 const ReportSchema = "tfcap/report/v1"

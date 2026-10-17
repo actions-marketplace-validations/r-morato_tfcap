@@ -11,6 +11,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/r-morato/tfcap/internal/model"
 	"github.com/r-morato/tfcap/internal/rules"
@@ -23,6 +24,18 @@ type File struct {
 	Schema  string  `json:"schema"`
 	Comment string  `json:"_comment,omitempty"`
 	Modules []Entry `json:"modules"`
+	// ProvidersLocked is set by tfcap >= 0.3, which also records the
+	// provider checksums from .terraform.lock.hcl. Older lock files skip
+	// provider checks until they are re-locked.
+	ProvidersLocked bool            `json:"providers_locked,omitempty"`
+	Providers       []ProviderEntry `json:"providers,omitempty"`
+}
+
+// ProviderEntry locks one provider from .terraform.lock.hcl.
+type ProviderEntry struct {
+	Address string   `json:"address"`
+	Version string   `json:"version"`
+	Hashes  []string `json:"hashes"`
 }
 
 // Entry locks one module.
@@ -74,6 +87,10 @@ func Build(rep *model.Report) *File {
 		f.Modules = append(f.Modules, e)
 	}
 	sort.Slice(f.Modules, func(i, j int) bool { return f.Modules[i].Key < f.Modules[j].Key })
+	f.ProvidersLocked = true
+	for _, p := range rep.ProviderLocks {
+		f.Providers = append(f.Providers, ProviderEntry{Address: p.Address, Version: p.Version, Hashes: append([]string(nil), p.Hashes...)})
+	}
 	return f
 }
 
@@ -111,6 +128,14 @@ const (
 	StatusRemoved  = "removed"  // in lock, no longer used
 )
 
+// ProviderStatus is the verification outcome for one provider.
+type ProviderStatus struct {
+	Address        string `json:"address"`
+	Status         string `json:"status"` // ok, new, upgraded, mutated, removed
+	LockedVersion  string `json:"locked_version,omitempty"`
+	CurrentVersion string `json:"current_version,omitempty"`
+}
+
 // ModuleStatus is the verification outcome for one module.
 type ModuleStatus struct {
 	Key          string `json:"key"`
@@ -125,8 +150,9 @@ type ModuleStatus struct {
 
 // Result of verifying a report against a lock.
 type Result struct {
-	Schema  string         `json:"schema"`
-	Modules []ModuleStatus `json:"modules"`
+	Schema    string           `json:"schema"`
+	Modules   []ModuleStatus   `json:"modules"`
+	Providers []ProviderStatus `json:"providers,omitempty"`
 	// Findings are capabilities that were not reviewed: mutation alerts plus
 	// every capability that is new relative to the lock.
 	Findings []model.Capability `json:"findings"`
@@ -193,6 +219,9 @@ func Verify(f *File, rep *model.Report) *Result {
 		}
 	}
 	sort.Slice(res.Modules, func(i, j int) bool { return res.Modules[i].Key < res.Modules[j].Key })
+	if f.ProvidersLocked {
+		verifyProviders(f, rep, res)
+	}
 	sort.SliceStable(res.Findings, func(i, j int) bool {
 		if res.Findings[i].Severity != res.Findings[j].Severity {
 			return res.Findings[i].Severity > res.Findings[j].Severity
@@ -250,7 +279,8 @@ func Merge(old, fresh *File, only []string) (*File, error) {
 		}
 		return fresh, nil
 	}
-	out := &File{Schema: Schema, Comment: fresh.Comment, Modules: append([]Entry(nil), old.Modules...)}
+	out := &File{Schema: Schema, Comment: fresh.Comment, Modules: append([]Entry(nil), old.Modules...),
+		ProvidersLocked: old.ProvidersLocked, Providers: old.Providers}
 	for _, k := range only {
 		e := findEntry(fresh, k)
 		if e == nil {
@@ -323,8 +353,11 @@ func label(e Entry) string { return withVersion(e.Source, e.Version) }
 var (
 	hashRe   = regexp.MustCompile(`^tfcap1:[0-9a-f]{64}$`)
 	commitRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
-	ruleRe   = regexp.MustCompile(`^TFCAP-[A-Z]+-[0-9]{3}$`)
-	fpRe     = regexp.MustCompile(`^[0-9a-f]{16}$`)
+
+	providerAddrRe = regexp.MustCompile(`^[a-z0-9.:-]+/[a-z0-9_-]+/[a-z0-9_-]+$`)
+	providerHashRe = regexp.MustCompile(`^(h1:[A-Za-z0-9+/]+=*|zh:[0-9a-f]{64})$`)
+	ruleRe         = regexp.MustCompile(`^TFCAP-[A-Z]+-[0-9]{3}$`)
+	fpRe           = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
 // Validate strictly checks a lock file produced elsewhere (for example by a
@@ -354,6 +387,16 @@ func Validate(path string) error {
 	if f.Schema != Schema {
 		return fmt.Errorf("%s: unsupported schema %q", path, f.Schema)
 	}
+	for _, p := range f.Providers {
+		if !providerAddrRe.MatchString(p.Address) || p.Version == "" || len(p.Version) > 64 {
+			return fmt.Errorf("%s: malformed provider entry %q", path, p.Address)
+		}
+		for _, h := range p.Hashes {
+			if !providerHashRe.MatchString(h) {
+				return fmt.Errorf("%s: provider %q has a malformed hash", path, p.Address)
+			}
+		}
+	}
 	seen := map[string]bool{}
 	for _, m := range f.Modules {
 		switch {
@@ -382,4 +425,80 @@ func mutatedMessage(e Entry, m model.Module) string {
 		return msg + fmt.Sprintf(" The same version now resolves to commit %s (locked: %s): the tag was moved.", m.Commit[:12], e.Commit[:12])
 	}
 	return msg + " The tag or registry release was re-pointed."
+}
+
+func verifyProviders(f *File, rep *model.Report, res *Result) {
+	locked := map[string]ProviderEntry{}
+	for _, p := range f.Providers {
+		locked[p.Address] = p
+	}
+	current := map[string]bool{}
+	add := func(id string, p model.ProviderLock, msg, detail string) {
+		r := rules.Get(id)
+		res.Findings = append(res.Findings, model.Capability{RuleID: r.ID, Severity: r.Severity, Phase: r.Phase,
+			Address: "provider." + p.Address, File: ".terraform.lock.hcl", Line: p.Line, Message: msg, Detail: detail})
+	}
+	for _, p := range rep.ProviderLocks {
+		current[p.Address] = true
+		e, ok := locked[p.Address]
+		st := ProviderStatus{Address: p.Address, CurrentVersion: p.Version, LockedVersion: e.Version}
+		switch {
+		case !ok:
+			st.Status = "new"
+			add(rules.ProvNew, p, fmt.Sprintf("New provider %s %s", p.Address, p.Version), "provider:"+p.Address)
+		case e.Version != p.Version:
+			st.Status = "upgraded"
+			add(rules.ProvUpgraded, p, fmt.Sprintf("Provider %s upgraded %s → %s", p.Address, e.Version, p.Version), "provider:"+p.Address+"@"+p.Version)
+		case hashesConflict(e.Hashes, p.Hashes):
+			st.Status = "mutated"
+			add(rules.ProvMutated, p, fmt.Sprintf("Provider %s %s has different checksums than when it was locked: the same version now points at a different binary", p.Address, p.Version), "provider:"+p.Address+"@"+p.Version)
+		default:
+			st.Status = "ok"
+		}
+		res.Providers = append(res.Providers, st)
+	}
+	for _, e := range f.Providers {
+		if !current[e.Address] {
+			res.Providers = append(res.Providers, ProviderStatus{Address: e.Address, Status: "removed", LockedVersion: e.Version})
+		}
+	}
+	sort.Slice(res.Providers, func(i, j int) bool { return res.Providers[i].Address < res.Providers[j].Address })
+}
+
+// hashesConflict reports whether two checksum sets for the same provider
+// version cannot describe the same release. The registry's zh: hashes for a
+// version never change, so differing zh: sets are a conflict; otherwise any
+// shared hash means the same release (init adds h1: hashes per platform).
+func hashesConflict(old, cur []string) bool {
+	pick := func(hs []string, prefix string) map[string]bool {
+		m := map[string]bool{}
+		for _, h := range hs {
+			if strings.HasPrefix(h, prefix) {
+				m[h] = true
+			}
+		}
+		return m
+	}
+	oz, cz := pick(old, "zh:"), pick(cur, "zh:")
+	if len(oz) > 0 && len(cz) > 0 {
+		if len(oz) != len(cz) {
+			return true
+		}
+		for h := range oz {
+			if !cz[h] {
+				return true
+			}
+		}
+		return false
+	}
+	oh, ch := pick(old, "h1:"), pick(cur, "h1:")
+	if len(oh) == 0 || len(ch) == 0 {
+		return false
+	}
+	for h := range oh {
+		if ch[h] {
+			return false
+		}
+	}
+	return true
 }

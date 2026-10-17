@@ -71,6 +71,11 @@ func Scan(root string, opts Options) (*model.Report, error) {
 	} else {
 		s.walkLocal("", abs, model.SourceRoot, ".", "", false)
 	}
+	if pl, err := readProviderLock(abs); err != nil {
+		rep.Errors = append(rep.Errors, ".terraform.lock.hcl: "+err.Error())
+	} else {
+		rep.ProviderLocks = pl
+	}
 	rep.Sort()
 	return rep, nil
 }
