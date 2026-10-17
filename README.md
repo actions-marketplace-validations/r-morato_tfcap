@@ -1,5 +1,7 @@
 # tfcap
 
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/r-morato/tfcap/badge)](https://securityscorecards.dev/viewer/?uri=github.com/r-morato/tfcap) [![Signed releases](https://img.shields.io/badge/releases-signed%20%2B%20SLSA%20provenance-2ea44f)](SECURITY.md#verifying-a-release)
+
 **Know what your Terraform modules can *do* before `terraform plan` does it.**
 
 `tfcap` inventories the capabilities of every Terraform/OpenTofu module and provider in a configuration (running programs, calling the network, reading credentials, granting IAM) and tells you when an upgrade changes them. It also adds the integrity check Terraform never had for modules: a lock file that catches a re-pointed git tag or a tampered registry release.

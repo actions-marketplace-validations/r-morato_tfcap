@@ -6,6 +6,7 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags: [-trimpath]
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
     ldflags: ["-s -w -X main.version={{ .Version }}"]
 archives:
   - formats: [tar.gz]
@@ -14,5 +15,16 @@ archives:
         formats: [zip]
 checksum:
   name_template: checksums.txt
+# One CycloneDX SBOM per archive (requires syft on PATH).
+sboms:
+  - artifacts: archive
+# Keyless Sigstore signature of the checksums file, so every archive is
+# covered. Verify with `cosign verify-blob` (see SECURITY.md).
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sigstore.json"
+    args: ["sign-blob", "--bundle=${signature}", "--yes", "${artifact}"]
+    output: true
 changelog:
   sort: asc
