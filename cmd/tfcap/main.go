@@ -69,6 +69,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdVerify(args[1:], stdout, stderr)
 	case "rules":
 		err = cmdRules(args[1:], stdout, stderr)
+	case "validate-lock":
+		err = cmdValidateLock(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
 		fmt.Fprintln(stdout, "tfcap", version)
 	case "help", "-h", "--help":
@@ -499,5 +501,20 @@ func cmdRules(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	output.Rules(stdout, *format == "markdown" || *format == "md")
+	return nil
+}
+
+// cmdValidateLock strictly checks a lock file without trusting it; used by
+// the GitHub Action before committing a lock file produced by another job.
+func cmdValidateLock(args []string, stdout, stderr io.Writer) error {
+	if len(args) != 1 {
+		fmt.Fprintln(stderr, "Usage: tfcap validate-lock <file>")
+		return exitError{2}
+	}
+	if err := lock.Validate(args[0]); err != nil {
+		fmt.Fprintln(stderr, "tfcap:", err)
+		return exitError{1}
+	}
+	fmt.Fprintln(stdout, "ok")
 	return nil
 }

@@ -5,9 +5,11 @@
 package lock
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
 	"sort"
 
 	"github.com/r-morato/tfcap/internal/model"
@@ -317,3 +319,56 @@ func Diff(prev, next *File) []Change {
 }
 
 func label(e Entry) string { return withVersion(e.Source, e.Version) }
+
+var (
+	hashRe = regexp.MustCompile(`^tfcap1:[0-9a-f]{64}$`)
+	ruleRe = regexp.MustCompile(`^TFCAP-[A-Z]+-[0-9]{3}$`)
+	fpRe   = regexp.MustCompile(`^[0-9a-f]{16}$`)
+)
+
+// Validate strictly checks a lock file produced elsewhere (for example by a
+// CI job that ran untrusted code) before it is trusted: known fields only,
+// well-formed hashes, rule IDs and fingerprints, and a sane size.
+func Validate(path string) error {
+	st, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if st.Size() > 5<<20 {
+		return fmt.Errorf("%s: lock file is unexpectedly large (%d bytes)", path, st.Size())
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.DisallowUnknownFields()
+	var f File
+	if err := dec.Decode(&f); err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+	if dec.More() {
+		return fmt.Errorf("%s: trailing data after the lock object", path)
+	}
+	if f.Schema != Schema {
+		return fmt.Errorf("%s: unsupported schema %q", path, f.Schema)
+	}
+	seen := map[string]bool{}
+	for _, m := range f.Modules {
+		switch {
+		case m.Key == "" || seen[m.Key]:
+			return fmt.Errorf("%s: empty or duplicate module key %q", path, m.Key)
+		case m.Source == "":
+			return fmt.Errorf("%s: module %q has no source", path, m.Key)
+		case !hashRe.MatchString(m.Hash):
+			return fmt.Errorf("%s: module %q has a malformed hash", path, m.Key)
+		}
+		seen[m.Key] = true
+		for _, c := range m.Capabilities {
+			if !ruleRe.MatchString(c.RuleID) || !fpRe.MatchString(c.Fingerprint) {
+				return fmt.Errorf("%s: module %q has a malformed capability entry", path, m.Key)
+			}
+		}
+	}
+	return nil
+}
