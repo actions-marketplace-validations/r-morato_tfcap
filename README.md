@@ -136,7 +136,13 @@ tfcap verify        # exit 1 if anything is unreviewed at or above --fail-on (de
 | `new` | Module not in the lock; all of its capabilities are reported. |
 | `removed` | In the lock, no longer used. |
 
-After reviewing an upgrade, run `tfcap lock` again and commit. The lock diff in the PR then shows exactly which capabilities you accepted.
+After reviewing an upgrade, run `tfcap lock` again and commit (or let the GitHub Action do it, see [Approving from the pull request](#approving-from-the-pull-request)). The lock diff in the PR then shows exactly which capabilities you accepted.
+
+`tfcap lock` is safe to re-run:
+
+- It **refuses** to accept a `MUTATED` module (same version, different code) and exits 1, so a hurried `lock` can't quietly approve a tampered module. If you've investigated and it's legitimate, pass `--accept-mutated`.
+- `--module <key>` updates only that module's entry (repeatable), leaving the rest of the lock untouched.
+- It prints what changed: `+` added, `~` updated (with the number of new capabilities), `-` removed.
 
 ### Diff two trees or reports
 
@@ -198,15 +204,21 @@ On every pull request, tfcap Plan Guard checks your modules against `tfcap.lock.
    name: tfcap
    on:
      pull_request:
+       types: [opened, synchronize, reopened, labeled]
      push:
        branches: [main]
+     schedule:
+       - cron: "0 6 * * *"     # daily: catches moved tags even when nobody opens a PR
    permissions:
      contents: read
-     pull-requests: write     # PR comment
-     security-events: write   # code-scanning alerts
    jobs:
-     tfcap:
+     tfcap:                    # checks every PR, push and the daily run
+       if: github.event.action != 'labeled'
        runs-on: ubuntu-latest
+       permissions:
+         contents: read
+         pull-requests: write  # PR comment
+         security-events: write # code-scanning alerts
        steps:
          - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
          - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
@@ -215,15 +227,49 @@ On every pull request, tfcap Plan Guard checks your modules against `tfcap.lock.
          - uses: r-morato/tfcap@v0  # pin to a commit SHA in production
            with:
              working-directory: infra
+
+     approve:                  # runs when a reviewer adds the tfcap-approved label
+       if: github.event.action == 'labeled' && github.event.label.name == 'tfcap-approved'
+       runs-on: ubuntu-latest
+       permissions:
+         contents: write       # commit the updated lock file to the PR branch
+         pull-requests: write
+         statuses: write       # mark the check as passed on that commit
+       steps:
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+           with:
+             ref: ${{ github.head_ref }}
+         - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+         - run: terraform init -backend=false -input=false
+           working-directory: infra
+         - uses: r-morato/tfcap@v0
+           with:
+             working-directory: infra
+             mode: approve
    ```
-3. **When a PR changes a module**, review what tfcap reports. If you accept it, run `tfcap lock` again and commit the updated lock file in the same PR; the lock-file diff then records exactly what you approved.
+3. **When a PR changes a module**, tfcap comments with what's new and, if it's risky, fails the check. Review it, then either add the **`tfcap-approved`** label (see below) or run `tfcap lock` yourself and push the updated lock file.
+
+If the daily run fails, a module changed behind a version you had locked. GitHub emails the person who last edited the workflow's schedule.
+
+### Approving from the pull request
+
+Reviewing a Dependabot or Renovate bump shouldn't mean checking out the branch and running commands. Instead, read tfcap's comment and, if you're happy, add the `tfcap-approved` label. The `approve` job then:
+
+1. checks that whoever added the label has **write access** to the repository (others are ignored, with a comment saying why);
+2. runs `tfcap lock`, which still **refuses MUTATED modules**: a label can never approve code that changed behind an unchanged version;
+3. commits the updated `tfcap.lock.json` to the PR branch as `github-actions[bot]`, with `Approved-by: @you` in the commit message;
+4. sets a passing `tfcap` status on that commit and updates the PR comment.
+
+Works for branches in the same repository, including Dependabot and Renovate PRs. Pull requests from forks can't be approved this way (GitHub gives fork PRs a read-only token); run `tfcap lock` locally instead.
 
 ### Inputs
 
 | Input | Default | Description |
 |---|---|---|
 | `working-directory` | `.` | Terraform root module, relative to the repository root. Run `terraform init` or `tofu init` there first. |
-| `mode` | `verify` | `verify`: compare against `tfcap.lock.json` and report only unreviewed changes. `scan`: report everything (no lock file needed). |
+| `mode` | `verify` | `verify`: compare against `tfcap.lock.json` and report only unreviewed changes. `scan`: report everything (no lock file needed). `approve`: update the lock file on the PR branch when the approve label is added (see above). |
+| `approve-label` | `tfcap-approved` | `approve` mode: the label that approves module changes. |
+| `status-context` | `tfcap` | `approve` mode: name of the commit status to set. Match your verify job's name if it's a required check. |
 | `fail-on` | `high` | Fail the check at or above this severity: `none`, `info`, `low`, `medium`, `high`, `critical`. |
 | `min-severity` | `low` | Hide findings below this severity in the comment and alerts. |
 | `third-party-only` | `true` | `scan` mode only: ignore capabilities in your own modules. |
