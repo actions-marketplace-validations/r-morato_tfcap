@@ -62,6 +62,8 @@ type analyzer struct {
 	file    string
 	src     []byte
 	scanned map[string]bool // helper scripts already scanned
+	scope   *moduleScope    // locals, variables and secrets, for evaluation
+	allSrc  string          // all source text, to tell what evaluation reveals
 }
 
 // Dir analyzes the Terraform files directly inside dir (not subdirectories;
@@ -84,6 +86,15 @@ func Dir(dir, moduleKey string, opts Options) (*Result, error) {
 		}
 	}
 	sort.Strings(names)
+	var all strings.Builder
+	for _, n := range names {
+		if b, err := os.ReadFile(filepath.Join(dir, n)); err == nil {
+			all.Write(b)
+			all.WriteByte('\n')
+		}
+	}
+	a.allSrc = all.String()
+	a.prepass(names)
 	for _, n := range names {
 		src, err := os.ReadFile(filepath.Join(dir, n))
 		if err != nil {
@@ -382,7 +393,12 @@ func (a *analyzer) resource(typ, addr string, b *hclsyntax.Block) {
 			if at, ok := attr(p, "interpreter"); ok {
 				cmd = a.text(at.Expr.Range()) + " " + cmd
 			}
-			a.execCommand(rules.ExecLocal, addr, p.TypeRange, cmd, "local-exec provisioner runs a command on the Terraform host")
+			saved := a.scope
+			a.scope = a.scope.withSelf(b)
+			ev := a.evalAttrs(p, "interpreter", "command", "environment")
+			a.scope = saved
+			a.execCommand(rules.ExecLocal, addr, p.TypeRange, cmd, "local-exec provisioner runs a command on the Terraform host", ev)
+			a.flows(rules.FlowSecretExec, addr, p, "a local-exec command", []sink{{"command", model.High}, {"interpreter", model.High}, {"environment", model.Medium}})
 		case "remote-exec":
 			cmd := ""
 			for _, n := range []string{"inline", "script", "scripts"} {
@@ -411,7 +427,8 @@ func (a *analyzer) dataSource(typ, addr string, b *hclsyntax.Block) {
 		if at, ok := attr(b, "program"); ok {
 			prog = a.text(at.Expr.Range())
 		}
-		a.execCommand(rules.ExecExternalData, addr, b.TypeRange, prog, "external data source runs a program during plan")
+		a.execCommand(rules.ExecExternalData, addr, b.TypeRange, prog, "external data source runs a program during plan", a.evalAttrs(b, "program", "query"))
+		a.flows(rules.FlowSecretExec, addr, b, "a program run during plan", []sink{{"program", model.Critical}, {"query", model.High}})
 	case typ == "shell_script":
 		a.execCommand(rules.ExecExternalData, addr, b.TypeRange, a.text(b.Body.SrcRange), "shell_script data source runs commands during plan")
 	case typ == "http":
@@ -441,10 +458,13 @@ func (a *analyzer) dataSource(typ, addr string, b *hclsyntax.Block) {
 		if len(tags) >= 2 || (contains(tags, "interpolated-url") && contains(tags, "sends-body")) {
 			a.bump(model.Critical)
 		}
+		a.revealed(addr, b.TypeRange, a.evalAttrs(b, "url", "request_body", "request_headers"))
+		a.flows(rules.FlowSecretNet, addr, b, "an HTTP request made during plan", httpSinks(b))
 	case typ == "aws_iam_policy_document":
 		a.iamDocument(addr, b)
 	case strings.HasPrefix(typ, "dns_"):
 		a.add(rules.NetDNSData, addr, b.TypeRange, typ+" performs DNS lookups during plan", "dns:"+typ, "")
+		a.flows(rules.FlowSecretNet, addr, b, "a DNS lookup made during plan", []sink{{"host", model.Critical}})
 	case typ == "local_file" || typ == "local_sensitive_file":
 		fn := ""
 		if at, ok := attr(b, "filename"); ok {
@@ -471,7 +491,7 @@ var scriptRefRe = regexp.MustCompile(`\$\{path\.module\}[/\\]([^\s"'$\]\),]+)`)
 
 // execCommand records an exec capability and inspects its command text and
 // any helper scripts it references inside the module.
-func (a *analyzer) execCommand(ruleID, addr string, rng hcl.Range, cmd, msg string) {
+func (a *analyzer) execCommand(ruleID, addr string, rng hcl.Range, cmd, msg string, evaluated ...string) {
 	// Everything found in the command or its helper scripts fires in the
 	// same phase as the exec itself (plan for external data sources).
 	start := len(a.res.Capabilities)
@@ -494,6 +514,15 @@ func (a *analyzer) execCommand(ruleID, addr string, rng hcl.Range, cmd, msg stri
 		if len(tags) >= 2 {
 			a.bump(model.Critical)
 		}
+	}
+	for _, ev := range evaluated {
+		for _, m := range scriptRefRe.FindAllStringSubmatch(ev, -1) {
+			if body, rel, ok := a.readHelper(m[1]); ok && !strings.Contains(cmd, m[1]) {
+				ev += "\n" + body
+				a.scanHelper(rel, body, addr)
+			}
+		}
+		a.revealed(addr, rng, ev)
 	}
 }
 

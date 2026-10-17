@@ -63,6 +63,9 @@ const (
 	ProvUpgraded     = "TFCAP-PROV-006"
 	ProvMutated      = "TFCAP-PROV-007"
 
+	FlowSecretNet  = "TFCAP-FLOW-001"
+	FlowSecretExec = "TFCAP-FLOW-002"
+
 	RepKnownMalicious = "TFCAP-REP-001"
 	RepRepoMissing    = "TFCAP-REP-002"
 	RepRepoMoved      = "TFCAP-REP-003"
@@ -180,6 +183,12 @@ var catalog = map[string]Rule{
 	ProvUpgraded: {ProvUpgraded, "provider-upgraded", model.Low, model.PhaseInit,
 		"A provider version changed since the lock was reviewed.",
 		"Routine, but worth a glance at the provider's changelog."},
+	FlowSecretNet: {FlowSecretNet, "secret-to-network", model.High, model.PhasePlan,
+		"A secret (sensitive variable, secret store read, generated password) flows into a request made during plan.",
+		"tfcap follows references through locals from secret sources to data \"http\" and DNS lookups. In the URL or body the secret leaves to whoever the URL names; a header to a fixed API host is the normal way to send a token and is graded medium."},
+	FlowSecretExec: {FlowSecretExec, "secret-to-exec", model.High, model.PhasePlan,
+		"A secret flows into a program or command (external data source or local-exec).",
+		"Secrets in a command line show up in process lists and CI logs, and the program receiving them can send them anywhere. Passing them in a local-exec environment block is safer and graded medium."},
 	RepKnownMalicious: {RepKnownMalicious, "known-malicious", model.Critical, model.PhaseInit,
 		"Module or provider is on tfcap's list of confirmed malicious packages.",
 		"The list only contains packages with a public, verified incident report. Remove it and rotate any credentials that were present where it ran."},
