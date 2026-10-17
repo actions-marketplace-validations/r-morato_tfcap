@@ -350,10 +350,19 @@ func cmdDiff(args []string, stdout, stderr io.Writer) error {
 
 // ---- lock / verify ----
 
+// stringList is a repeatable string flag.
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
+
 func cmdLock(args []string, stdout, stderr io.Writer) error {
 	fs := newFlagSet("lock", "tfcap lock [dir] [flags]", stderr)
 	file := fs.String("file", "", "lock file path (default: <dir>/tfcap.lock.json)")
 	dataDir := fs.String("data-dir", "", "Terraform data dir (default: $TF_DATA_DIR or .terraform)")
+	acceptMutated := fs.Bool("accept-mutated", false, "also accept modules whose content changed without a version change (normally refused)")
+	var only stringList
+	fs.Var(&only, "module", "only update this module's entry (module key, e.g. network or vpc.subnets); repeatable")
 	if err := parse(fs, args); err != nil {
 		return err
 	}
@@ -362,10 +371,43 @@ func cmdLock(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	lf := lock.Build(rep)
 	path := *file
 	if path == "" {
 		path = filepath.Join(dir, "tfcap.lock.json")
+	}
+
+	var old *lock.File
+	if f, err := lock.Read(path); err == nil {
+		old = f
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	// Never silently accept a module whose code changed behind an unchanged
+	// version: that is the attack the lock file exists to catch.
+	if old != nil && !*acceptMutated {
+		selected := map[string]bool{}
+		for _, k := range only {
+			selected[k] = true
+		}
+		var mutated []string
+		for _, m := range lock.Verify(old, rep).Modules {
+			if m.Status == lock.StatusMutated && (len(only) == 0 || selected[m.Key]) {
+				mutated = append(mutated, displayModule(m.Key))
+			}
+		}
+		if len(mutated) > 0 {
+			fmt.Fprintf(stderr, "tfcap: refusing to lock: %s changed content without a version change (MUTATED).\n", strings.Join(mutated, ", "))
+			fmt.Fprintln(stderr, "       This is what a moved git tag or a tampered registry release looks like.")
+			fmt.Fprintln(stderr, "       Run `tfcap verify` to see what changed. Only if you are sure it is legitimate, re-run with --accept-mutated.")
+			return exitError{1}
+		}
+	}
+
+	fresh := lock.Build(rep)
+	lf, err := lock.Merge(old, fresh, only)
+	if err != nil {
+		return err
 	}
 	if len(lf.Modules) == 0 {
 		fmt.Fprintln(stderr, "tfcap: warning: no third-party modules found. Did you run `terraform init`?")
@@ -373,13 +415,29 @@ func cmdLock(args []string, stdout, stderr io.Writer) error {
 	if err := lf.Write(path); err != nil {
 		return err
 	}
-	n := 0
-	for _, m := range lf.Modules {
-		n += len(m.Capabilities)
+
+	changes := lock.Diff(old, lf)
+	unchanged := 0
+	fmt.Fprintf(stdout, "Wrote %s\n", path)
+	for _, ch := range changes {
+		switch ch.Kind {
+		case "added":
+			fmt.Fprintf(stdout, "  + %s  added: %s (%d capabilities)\n", displayModule(ch.Key), ch.To, ch.NewCaps)
+		case "updated":
+			fmt.Fprintf(stdout, "  ~ %s  %s → %s (%d new capabilities)\n", displayModule(ch.Key), ch.From, ch.To, ch.NewCaps)
+		case "removed":
+			fmt.Fprintf(stdout, "  - %s  removed\n", displayModule(ch.Key))
+		default:
+			unchanged++
+		}
 	}
-	fmt.Fprintf(stdout, "Locked %d third-party modules (%d capabilities) in %s\n", len(lf.Modules), n, path)
+	if unchanged > 0 {
+		fmt.Fprintf(stdout, "  = %d unchanged\n", unchanged)
+	}
 	return nil
 }
+
+func displayModule(key string) string { return "module." + strings.ReplaceAll(key, ".", ".module.") }
 
 func cmdVerify(args []string, stdout, stderr io.Writer) error {
 	var c common

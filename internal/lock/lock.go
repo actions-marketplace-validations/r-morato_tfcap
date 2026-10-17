@@ -223,3 +223,97 @@ func short(h string) string {
 	}
 	return h
 }
+
+// Change describes how one module's lock entry changes.
+type Change struct {
+	Key     string `json:"key"`
+	Kind    string `json:"kind"` // added, updated, removed, unchanged
+	From    string `json:"from,omitempty"`
+	To      string `json:"to,omitempty"`
+	NewCaps int    `json:"new_capabilities,omitempty"`
+}
+
+// Merge builds the lock to write. With no `only` keys the fresh lock is
+// used as-is. With `only`, the old lock is kept and just those modules are
+// replaced (or added) from the fresh scan. It returns an error for a key
+// that is not a third-party module in the fresh scan.
+func Merge(old, fresh *File, only []string) (*File, error) {
+	if len(only) == 0 || old == nil {
+		if len(only) > 0 {
+			for _, k := range only {
+				if findEntry(fresh, k) == nil {
+					return nil, fmt.Errorf("module %q is not a third-party module in this configuration", k)
+				}
+			}
+		}
+		return fresh, nil
+	}
+	out := &File{Schema: Schema, Comment: fresh.Comment, Modules: append([]Entry(nil), old.Modules...)}
+	for _, k := range only {
+		e := findEntry(fresh, k)
+		if e == nil {
+			return nil, fmt.Errorf("module %q is not a third-party module in this configuration", k)
+		}
+		replaced := false
+		for i := range out.Modules {
+			if out.Modules[i].Key == k {
+				out.Modules[i] = *e
+				replaced = true
+			}
+		}
+		if !replaced {
+			out.Modules = append(out.Modules, *e)
+		}
+	}
+	sort.Slice(out.Modules, func(i, j int) bool { return out.Modules[i].Key < out.Modules[j].Key })
+	return out, nil
+}
+
+func findEntry(f *File, key string) *Entry {
+	if f == nil {
+		return nil
+	}
+	for i := range f.Modules {
+		if f.Modules[i].Key == key {
+			return &f.Modules[i]
+		}
+	}
+	return nil
+}
+
+// Diff summarises how next differs from prev (prev may be nil).
+func Diff(prev, next *File) []Change {
+	var out []Change
+	for _, n := range next.Modules {
+		p := findEntry(prev, n.Key)
+		switch {
+		case p == nil:
+			out = append(out, Change{Key: n.Key, Kind: "added", To: label(n), NewCaps: len(n.Capabilities)})
+		case p.Hash == n.Hash && p.Source == n.Source && p.Version == n.Version:
+			out = append(out, Change{Key: n.Key, Kind: "unchanged"})
+		default:
+			known := map[string]bool{}
+			for _, c := range p.Capabilities {
+				known[c.Fingerprint] = true
+			}
+			added := 0
+			for _, c := range n.Capabilities {
+				if !known[c.Fingerprint] {
+					added++
+				}
+			}
+			out = append(out, Change{Key: n.Key, Kind: "updated", From: label(*p), To: label(n), NewCaps: added})
+		}
+	}
+	if prev != nil {
+		for _, p := range prev.Modules {
+			if findEntry(next, p.Key) == nil {
+				out = append(out, Change{Key: p.Key, Kind: "removed", From: label(p)})
+			}
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	return out
+}
+
+func label(e Entry) string { return withVersion(e.Source, e.Version) }

