@@ -10,8 +10,17 @@ inputs:
     description: Terraform root module directory. Run `terraform init` (or `tofu init`) first.
     default: "."
   mode:
-    description: "verify (check against tfcap.lock.json) or scan (inventory everything)"
+    description: >-
+      verify (check against tfcap.lock.json), scan (inventory everything), or
+      approve (when the approve-label is added to a pull request: update
+      tfcap.lock.json on the PR branch and mark the check as passed)
     default: verify
+  approve-label:
+    description: "approve mode: the pull request label that approves module changes"
+    default: tfcap-approved
+  status-context:
+    description: "approve mode: name of the commit status to set; match your verify job's check name"
+    default: tfcap
   fail-on:
     description: Fail the job when a finding is at or above this severity (none|info|low|medium|high|critical).
     default: high
@@ -40,7 +49,7 @@ inputs:
 outputs:
   exit-code:
     description: tfcap exit code (0 ok, 1 policy failure, 2 error).
-    value: ${{ steps.run.outputs.exit-code }}
+    value: ${{ steps.run.outputs.exit-code || steps.approve.outputs.exit-code }}
 
 runs:
   using: composite
@@ -65,6 +74,7 @@ runs:
 
     - name: Run tfcap
       id: run
+      if: inputs.mode != 'approve'
       shell: bash
       working-directory: ${{ inputs.working-directory }}
       env:
@@ -77,7 +87,8 @@ runs:
         set +e
         case "$MODE" in
           verify|scan) ;;
-          *) echo "::error::mode must be verify or scan"; exit 2 ;;
+          approve) exit 0 ;; # handled by the next step
+          *) echo "::error::mode must be verify, scan or approve"; exit 2 ;;
         esac
         extra=()
         if [ "$MODE" = scan ] && [ "$THIRD" = "true" ]; then extra+=(--third-party-only); fi
@@ -95,15 +106,88 @@ runs:
         cat "$RUNNER_TEMP/tfcap.comment.md" >> "$GITHUB_STEP_SUMMARY"
         exit 0
 
+    - name: Approve module changes
+      id: approve
+      if: inputs.mode == 'approve'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ github.repository }}
+        EVENT: ${{ github.event_name }}
+        ACTION: ${{ github.event.action }}
+        LABEL: ${{ github.event.label.name }}
+        APPROVE_LABEL: ${{ inputs.approve-label }}
+        ACTOR: ${{ github.event.sender.login }}
+        HEAD_REF: ${{ github.head_ref }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        STATUS_CONTEXT: ${{ inputs.status-context }}
+      run: |
+        set -uo pipefail
+        out="$RUNNER_TEMP/tfcap.comment.md"
+        finish() { echo "exit-code=$1" >> "$GITHUB_OUTPUT"; cat "$out" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null; exit 0; }
+
+        if [ "$EVENT" != "pull_request" ] || [ "$ACTION" != "labeled" ] || [ "$LABEL" != "$APPROVE_LABEL" ]; then
+          echo "::notice::approve mode only acts when the '$APPROVE_LABEL' label is added to a pull request. Nothing to do."
+          echo "skip-comment=true" >> "$GITHUB_OUTPUT"
+          echo "exit-code=0" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Only people who could push the change themselves may approve it.
+        perm=$(gh api "repos/$REPO/collaborators/$ACTOR/permission" --jq .permission 2>/dev/null || echo none)
+        case "$perm" in
+          admin|maintain|write) ;;
+          *)
+            printf '<!-- tfcap -->\n### tfcap: approval ignored\n\n@%s added `%s`, but approving module changes needs write access to this repository (they have `%s`).\n' \
+              "$ACTOR" "$APPROVE_LABEL" "$perm" > "$out"
+            finish 1 ;;
+        esac
+
+        if [ "$(git rev-parse --abbrev-ref HEAD)" != "$HEAD_REF" ]; then
+          echo "::error::approve mode needs the pull request branch checked out: use actions/checkout with ref set to github.head_ref"
+          echo "skip-comment=true" >> "$GITHUB_OUTPUT"
+          finish 2
+        fi
+
+        lockout=$(tfcap lock . 2>&1); code=$?
+        if [ $code -ne 0 ]; then
+          { echo '<!-- tfcap -->'; echo '### tfcap: approval refused'; echo
+            echo "@$ACTOR, the lock file was not updated:"; echo; echo '```'; echo "$lockout"; echo '```'; echo
+            echo 'A label cannot approve a module whose code changed without a version change. Investigate, and if it is legitimate, run `tfcap lock --accept-mutated` locally and push.'
+          } > "$out"
+          finish 1
+        fi
+
+        git add tfcap.lock.json
+        if ! git diff --cached --quiet -- tfcap.lock.json; then
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "tfcap: approve module changes" -m "Approved-by: @$ACTOR (label: $APPROVE_LABEL)" -m "$lockout"
+          git push -q origin "HEAD:$HEAD_REF"
+        fi
+        sha=$(git rev-parse HEAD)
+
+        tfcap verify . --fail-on "$FAIL_ON" --no-color > "$RUNNER_TEMP/verify.txt" 2>&1; vcode=$?
+        if [ $vcode -eq 0 ]; then state=success; desc="Module changes approved by @$ACTOR"; else state=failure; desc="Still failing after approval; see the run log"; fi
+        # Pushes made with the workflow token do not start new workflow runs,
+        # so report the result on the new commit directly.
+        gh api -X POST "repos/$REPO/statuses/$sha" -f state="$state" -f context="$STATUS_CONTEXT" -f description="$desc" >/dev/null
+
+        { echo '<!-- tfcap -->'; echo '### tfcap: module changes approved ✅'; echo
+          echo "Approved by @$ACTOR. \`tfcap.lock.json\` updated in ${sha:0:7}:"; echo; echo '```'; echo "$lockout"; echo '```'
+        } > "$out"
+        [ $vcode -eq 0 ] || { echo; echo '```'; cat "$RUNNER_TEMP/verify.txt"; echo '```'; } >> "$out"
+        finish $vcode
+
     - name: Upload SARIF
-      if: inputs.sarif == 'true' && steps.run.outputs.exit-code != '2'
+      if: inputs.mode != 'approve' && inputs.sarif == 'true' && steps.run.outputs.exit-code != '2'
       uses: github/codeql-action/upload-sarif@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
       with:
         sarif_file: ${{ runner.temp }}/tfcap.sarif
         category: tfcap
 
     - name: Comment on PR
-      if: inputs.comment == 'true' && github.event_name == 'pull_request' && steps.run.outputs.exit-code != '2'
+      if: inputs.comment == 'true' && github.event_name == 'pull_request' && steps.approve.outputs.skip-comment != 'true' && (steps.run.outputs.exit-code || steps.approve.outputs.exit-code) != '2'
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.github-token }}
@@ -123,5 +207,5 @@ runs:
     - name: Enforce fail-on
       shell: bash
       env:
-        CODE: ${{ steps.run.outputs.exit-code }}
+        CODE: ${{ steps.run.outputs.exit-code || steps.approve.outputs.exit-code }}
       run: exit "${CODE:-2}"
