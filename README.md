@@ -18,7 +18,7 @@ $ tfcap diff before/ after/
 Module changes
   changed  module.network registry.terraform.io/acme-oss/network/aws@1.4.0 → …@1.4.1
 
-New capabilities (13)
+New capabilities (14)
   + CRITICAL References credential material: ~/.aws/
              TFCAP-FS-001 module.network data.external.env_check scripts/preflight.sh:4
   + CRITICAL external data source runs a program during plan: ["bash", "${path.module}/scripts/preflight.sh"]
@@ -29,6 +29,8 @@ New capabilities (13)
              TFCAP-NET-001 module.network data.http.telemetry telemetry.tf:14
   + CRITICAL Provider kreuzwenker/docker looks like a typosquat of kreuzwerker/docker
              TFCAP-PROV-001 module.network provider.docker versions.tf:9
+  + CRITICAL Provider kreuzwenker/docker is a confirmed malicious package (Corgea, September 2026: …)
+             TFCAP-REP-001 module.network provider.docker versions.tf:9
   + HIGH     References credential variable AWS_SECRET_ACCESS_KEY
   + HIGH     Allows Action "*" on Resource "*" (administrator equivalent)
   …
@@ -104,7 +106,7 @@ Prebuilt binaries for Linux, macOS and Windows (Intel and ARM) are attached to e
 
 ## Quick start
 
-`tfcap` reads source code only. It never runs Terraform and never talks to the network.
+`tfcap` reads source code only. It never runs Terraform and never talks to the network unless you pass `--online`.
 
 ```sh
 terraform init -backend=false   # or tofu init; downloads modules into .terraform/modules
@@ -134,7 +136,7 @@ tfcap verify        # exit 1 if anything is unreviewed at or above --fail-on (de
 |---|---|
 | `ok` | Same source, version and content as locked. |
 | `upgraded` | Version or source changed. Only capabilities **not** in the lock are reported. |
-| `MUTATED` | **Same version, different content.** The tag was moved or the release was swapped. Always critical. |
+| `MUTATED` | **Same version, different content.** The tag was moved or the release was swapped. Always critical. For git modules the message names the commit the tag used to point at. |
 | `new` | Module not in the lock; all of its capabilities are reported. |
 | `removed` | In the lock, no longer used. |
 
@@ -145,6 +147,101 @@ After reviewing an upgrade, run `tfcap lock` again and commit (or let the GitHub
 - It **refuses** to accept a `MUTATED` module (same version, different code) and exits 1, so a hurried `lock` can't quietly approve a tampered module. If you've investigated and it's legitimate, pass `--accept-mutated`.
 - `--module <key>` updates only that module's entry (repeatable), leaving the rest of the lock untouched.
 - It prints what changed: `+` added, `~` updated (with the number of new capabilities), `-` removed.
+
+### Providers
+
+`tfcap lock` also records every provider's version and checksums from `.terraform.lock.hcl`, so `verify` covers providers too:
+
+| Status | Meaning |
+|---|---|
+| `new` | Provider not in the lock (medium). |
+| `upgraded` | Version changed (low). |
+| `MUTATED` | Same version, but none of the locked checksums match any more (critical). `lock` refuses it, like a mutated module. |
+
+`init` adding `h1:` hashes for another platform is normal and stays `ok`. Lock files written before v0.3 skip provider checks until you re-run `tfcap lock`.
+
+### Pin git modules to commits
+
+```sh
+tfcap pin            # rewrites ?ref=v1.2.0 to ?ref=<the commit it resolved to>
+tfcap pin --check    # CI: exit 1 if anything is still on a tag or branch
+```
+
+`pin` uses the commit `init` actually downloaded, and leaves a `# tfcap pin: was ref=v1.2.0` comment so reviewers can see the tag. `--exact-registry` also pins registry modules to the exact version installed. Only literal sources are rewritten.
+
+### Accept a finding on purpose: `tfcap.hcl`
+
+Some findings are fine for your setup. Write them down instead of turning the rule off:
+
+```hcl
+# tfcap.hcl, next to tfcap.lock.json
+allow {
+  module      = "module.network"          # optional, * globs allowed; default: any module
+  rules       = ["TFCAP-NET-003"]          # required, * globs allowed
+  detail      = "host:*.amazonaws.com"     # optional, matches the finding's detail
+  reason      = "Talks to AWS APIs only, reviewed in SEC-123"
+  approved_by = "@alice"
+  expires     = "2027-03-31"               # required, at most a year out
+}
+```
+
+`scan` and `verify` drop matching findings and say how many they dropped; the PR comment lists them with who approved them and why. An exception stops applying the day after it expires, and `tfcap` warns two weeks before. Integrity findings (mutated modules or providers) can't be accepted. `--no-policy` shows everything. Protect `tfcap.hcl` with CODEOWNERS like the lock file.
+
+### SBOM
+
+```sh
+tfcap sbom -o tfcap.cdx.json
+```
+
+Writes a CycloneDX 1.6 SBOM of third-party modules (source, version, resolved commit as a `pkg:github` purl, content hash, capability counts) and providers (version, SHA-256 checksums). Output is reproducible: the serial number comes from the content, and `SOURCE_DATE_EPOCH` sets the timestamp.
+
+### Reputation checks (`--online`)
+
+```sh
+GITHUB_TOKEN=... tfcap verify --online
+```
+
+Opt-in. Asks the Terraform registry, the GitHub API and the OpenSSF Scorecard API about each third-party module: the version doesn't exist on the registry, it was published in the last 7 days, the source repository is gone (repo-jacking risk), renamed, archived or under 90 days old, or scores below 4 on Scorecard. The token is only sent to GitHub. Network errors are warnings, never failures. Confirmed malicious packages (`TFCAP-REP-001`) are flagged offline, from a short list with a public incident report for every entry.
+
+### Terragrunt
+
+Run `tfcap` in a unit directory (the one with `terragrunt.hcl`) after `terragrunt init`. The `terraform.source` is checked like any module source (including `tfr://`), and the copy in `.terragrunt-cache` is scanned, locked and verified as `module.terragrunt`. Files Terragrunt copies or generates from your unit are treated as your code. For many units: `find live -name terragrunt.hcl -execdir tfcap verify \;`.
+
+### pre-commit
+
+```yaml
+# .pre-commit-config.yaml
+repos:
+  - repo: https://github.com/r-morato/tfcap
+    rev: v0.3.0
+    hooks:
+      - id: tfcap-verify          # needs `terraform init` to have run
+      - id: tfcap-validate-lock
+      - id: tfcap-pin-check
+```
+
+### GitLab CI
+
+```yaml
+tfcap:
+  image: golang:1.25
+  variables:
+    TFCAP_VERSION: v0.3.0
+  before_script:
+    - go install github.com/r-morato/tfcap/cmd/tfcap@${TFCAP_VERSION}
+    # install terraform or tofu here, then:
+    - tofu init -backend=false -input=false
+  script:
+    - tfcap verify --format sarif -o gl-tfcap.sarif --fail-on none
+    - tfcap verify
+  artifacts:
+    when: always
+    paths: [gl-tfcap.sarif]
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+```
+
+For approvals on GitLab, run `tfcap lock` locally and commit the lock file; it is a normal reviewed change like any other.
 
 ### Diff two trees or reports
 
@@ -163,9 +260,12 @@ tfcap diff base.json head.json --format markdown > comment.md
 | `tfcap diff <base> <head>` | Capabilities added/removed. Each side is a directory or a JSON report. Formats: `text`, `json`, `markdown`, `sarif`. |
 | `tfcap lock [dir]` | Write `tfcap.lock.json`. |
 | `tfcap verify [dir]` | Check against the lock. Formats: `text`, `json`, `markdown`, `sarif`. |
+| `tfcap pin [dir]` | Rewrite git module refs to the commit they resolved to. `--check` for CI, `--exact-registry` for registry versions. |
+| `tfcap sbom [dir]` | CycloneDX 1.6 SBOM of modules and providers. |
+| `tfcap validate-lock <file>...` | Strict schema check of a lock file (unknown fields, malformed hashes). |
 | `tfcap rules` | List every rule (`--format markdown` for docs). |
 
-Common flags: `--fail-on <severity|none>`, `--min-severity`, `--third-party-only`, `--format`, `--output`, `--data-dir`, `--no-color`, and for SARIF `--sarif-base <dir>` (the scanned folder relative to the repository root).
+Common flags: `--fail-on <severity|none>`, `--min-severity`, `--third-party-only`, `--format`, `--output`, `--data-dir`, `--no-color`, `--policy <file>` / `--no-policy`, `--online`, and for SARIF `--sarif-base <dir>` (the scanned folder relative to the repository root).
 Exit codes: `0` ok, `1` findings at or above `--fail-on`, `2` usage or runtime error.
 
 ## What it detects
@@ -180,7 +280,8 @@ The full catalog, with rationale, is in [docs/rules.md](docs/rules.md). The high
 | **Obfuscation** | Large base64/hex blobs, `base64decode("<constant>")`, compiled binaries shipped inside modules, unparseable files |
 | **IAM** | `*:*` admin grants, `service:*`, `NotAction`, privilege-escalation actions, `Principal: "*"`. Covers `aws_iam_policy_document`, `jsonencode({...})` and heredoc JSON. |
 | **Module sources** | Unpinned git, tag/branch refs instead of SHAs, inexact registry versions, archive URLs, plain-HTTP transports, content changed under the same version |
-| **Providers** | Typosquats of ~90 popular providers, custom registry hosts, exec-capable providers, community namespaces in third-party code |
+| **Providers** | Typosquats of ~90 popular providers, confirmed malicious packages, custom registry hosts, exec-capable providers, community namespaces in third-party code; with a lock, new, upgraded and mutated providers |
+| **Reputation** (`--online`) | Unknown registry versions, fresh releases, missing/renamed/archived/young repositories, low OpenSSF Scorecard |
 
 Every finding records the **phase** it fires in (`init`, `plan`, `apply`, `static`). Anything in `plan` runs before your approval gate.
 
@@ -293,6 +394,7 @@ Anyone who can push can edit `tfcap.lock.json` by hand. Make changes to it, and 
 ```
 # .github/CODEOWNERS
 **/tfcap.lock.json      @your-org/security
+**/tfcap.hcl            @your-org/security
 .github/workflows/      @your-org/security
 ```
 
@@ -307,10 +409,11 @@ Anyone who can push can edit `tfcap.lock.json` by hand. Make changes to it, and 
 | `fail-on` | `high` | Fail the check at or above this severity: `none`, `info`, `low`, `medium`, `high`, `critical`. |
 | `min-severity` | `low` | Hide findings below this severity in the comment and alerts. |
 | `third-party-only` | `true` | `scan` mode only: ignore capabilities in your own modules. |
+| `online` | `false` | Also run the `--online` reputation checks, using `github-token` for GitHub API calls. |
 | `comment` | `true` | Post a PR comment, and update the same comment on later pushes. |
 | `sarif` | `true` | Upload results to GitHub code scanning (needs `security-events: write`). |
 | `version` | *(empty)* | Empty builds tfcap from the Action's own source, so the scanner is pinned with the Action. Or set a release such as `v0.1.2`. |
-| `github-token` | `github.token` | Token used for the PR comment. |
+| `github-token` | `github.token` | Token used for the PR comment, the approve flow and `online` checks. |
 
 Outputs: `exit-code` (`0` ok, `1` policy failure, `2` error) and, for `approve-prepare`, `approved` (`true` when a lock file was handed to `approve-commit`).
 
@@ -322,21 +425,23 @@ Pin this Action, and every other Action, to a commit SHA: the Trivy and KICS Act
 - Discovers modules the way Terraform does, from `.terraform/modules/modules.json` (written by both `terraform init` and `tofu init`). A local submodule of a registry module counts as third-party.
 - Gives each capability a **fingerprint** (rule, module, address, file, normalized detail) that ignores line numbers and versions. Moving code around doesn't create noise; new behavior does.
 - Hashes each module with a portable content hash: sorted paths plus contents, CRLF-normalized so Windows and Linux agree, ignoring `.git` and `.terraform`.
-- Runs nothing: no Terraform execution, no network access, no telemetry.
+- Reads `.terraform.lock.hcl` for provider checksums, and `.git` metadata that `init` leaves in `.terraform/modules` for the commit a git module resolved to.
+- Runs nothing: no Terraform execution, no telemetry, and no network access unless you pass `--online`.
 
 ## Limitations
 
 - **Static analysis, not a sandbox.** A determined attacker can build a command from variables at runtime. `tfcap` raises the cost and catches the techniques used in real incidents so far. A sandboxed `plan` runner that records exec and network activity is on the roadmap.
 - **IAM coverage is AWS-shaped.** For deep policy analysis, use Checkov or Trivy alongside.
-- Provider *binaries* aren't analyzed. `tfcap` checks provider identity (typosquats, hosts), not provider code.
+- Provider *binaries* aren't analyzed. `tfcap` checks provider identity (typosquats, hosts) and integrity (checksums), not provider code.
 
 ## Roadmap
 
 - [ ] `tfcap fetch`: resolve and download remote modules without `terraform init` (pre-init review of a PR)
 - [ ] Sandboxed `plan` mode: run plan in a network-isolated container and record every exec/connect attempt
-- [ ] Allow-list file (`.tfcap.yml`) for accepted hosts and capabilities
 - [ ] Azure/GCP IAM wildcard rules
-- [ ] Registry metadata checks: publisher age, recently transferred namespaces
+- [x] Policy file with expiring exceptions (`tfcap.hcl`)
+- [x] Registry and repository reputation checks (`--online`)
+- [x] Provider checksum locking, SBOM, Terragrunt, pre-commit
 
 ## Contributing
 
