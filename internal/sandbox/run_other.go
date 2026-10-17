@@ -20,11 +20,12 @@ type Options struct {
 }
 
 type Result struct {
-	Events   []Event  `json:"events"`
-	ExitCode int      `json:"exit_code"`
-	Strace   bool     `json:"strace"`
-	Notes    []string `json:"notes,omitempty"`
-	TimedOut bool     `json:"timed_out,omitempty"`
+	Events     []Event  `json:"events"`
+	ExitCode   int      `json:"exit_code"`
+	Strace     bool     `json:"strace"`
+	Notes      []string `json:"notes,omitempty"`
+	TimedOut   bool     `json:"timed_out,omitempty"`
+	SetupError string   `json:"setup_error,omitempty"`
 }
 
 var errUnsupported = errors.New("tfcap sandbox needs Linux namespaces; run it on a Linux CI runner or VM")

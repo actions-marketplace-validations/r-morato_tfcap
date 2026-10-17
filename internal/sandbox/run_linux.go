@@ -19,6 +19,8 @@ import (
 	"time"
 )
 
+const nsHint = "On Ubuntu 23.10+ AppArmor restricts unprivileged user namespaces: run with sudo -E, or set kernel.apparmor_restrict_unprivileged_userns=0"
+
 // ChildArg is the hidden subcommand the sandbox re-executes itself with.
 const ChildArg = "__sandbox-child"
 
@@ -41,6 +43,8 @@ type Result struct {
 	Strace   bool     `json:"strace"`
 	Notes    []string `json:"notes,omitempty"`
 	TimedOut bool     `json:"timed_out,omitempty"`
+	// SetupError is set when the sandbox itself could not be built.
+	SetupError string `json:"setup_error,omitempty"`
 }
 
 type childConfig struct {
@@ -79,7 +83,7 @@ func Run(opts Options) (*Result, error) {
 	if err := cmd.Start(); err != nil {
 		w.Close()
 		r.Close()
-		return nil, fmt.Errorf("could not create the sandbox namespaces (%v). On Ubuntu 23.10+ unprivileged user namespaces are restricted by AppArmor: run with sudo -E, or set kernel.apparmor_restrict_unprivileged_userns=0", err)
+		return nil, fmt.Errorf("could not create the sandbox namespaces (%v). %s", err, nsHint)
 	}
 	w.Close()
 	out, _ := io.ReadAll(r)
@@ -88,6 +92,9 @@ func Run(opts Options) (*Result, error) {
 	var res Result
 	if err := json.Unmarshal(out, &res); err != nil {
 		return nil, fmt.Errorf("sandbox child failed (%v); no results", waitErr)
+	}
+	if res.SetupError != "" {
+		return nil, fmt.Errorf("could not set up the sandbox: %s. %s", res.SetupError, nsHint)
 	}
 	return &res, nil
 }
@@ -101,31 +108,31 @@ func Child() {
 		results.Close()
 		os.Exit(code)
 	}
+	fail := func(f string, a ...any) {
+		res.SetupError = fmt.Sprintf(f, a...)
+		finish(2)
+	}
 	var cfg childConfig
 	if err := json.Unmarshal([]byte(os.Getenv(configEnv)), &cfg); err != nil {
-		res.Notes = append(res.Notes, "bad config: "+err.Error())
-		finish(2)
+		fail("bad config: %v", err)
 	}
 	rec := NewRecorder(cfg.Honey)
 	note := func(f string, a ...any) { res.Notes = append(res.Notes, fmt.Sprintf(f, a...)) }
 
 	// Mounts are private to this namespace from here on.
 	if err := syscall.Mount("", "/", "", syscall.MS_REC|syscall.MS_PRIVATE, ""); err != nil {
-		note("mount namespace unavailable: %v", err)
-		finish(2)
+		fail("mount namespace unavailable: %v", err)
 	}
 	_ = syscall.Mount("proc", "/proc", "proc", 0, "")
 
 	work, err := os.MkdirTemp("", "tfcap-sandbox-")
 	if err != nil {
-		note("temp dir: %v", err)
-		finish(2)
+		fail("temp dir: %v", err)
 	}
 	_ = syscall.Mount("tmpfs", work, "tmpfs", 0, "mode=0700")
 	home := filepath.Join(work, "home")
 	if err := cfg.Honey.Write(home); err != nil {
-		note("honeytokens: %v", err)
-		finish(2)
+		fail("honeytokens: %v", err)
 	}
 	maskCredentials(home, note)
 
@@ -136,8 +143,7 @@ func Child() {
 	}
 
 	if err := loUp(); err != nil {
-		note("loopback: %v", err)
-		finish(2)
+		fail("loopback: %v", err)
 	}
 	if err := routeAllLocal(); err != nil {
 		note("could not route all addresses to the sandbox (%v); connections to raw IPs are not recorded", err)

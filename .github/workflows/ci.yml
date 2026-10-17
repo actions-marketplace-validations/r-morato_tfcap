@@ -22,6 +22,11 @@ jobs:
         if: runner.os == 'Linux'
         run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
       - run: go vet ./...
+      - name: Allow the sandbox tests to run (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo apt-get install -y --no-install-recommends strace >/dev/null || true
       - run: go test -race ./...
       - name: Test kit (10 scenarios)
         if: runner.os != 'Windows'
