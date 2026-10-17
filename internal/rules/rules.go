@@ -62,6 +62,15 @@ const (
 	ProvNew          = "TFCAP-PROV-005"
 	ProvUpgraded     = "TFCAP-PROV-006"
 	ProvMutated      = "TFCAP-PROV-007"
+
+	RepKnownMalicious = "TFCAP-REP-001"
+	RepRepoMissing    = "TFCAP-REP-002"
+	RepRepoMoved      = "TFCAP-REP-003"
+	RepRepoArchived   = "TFCAP-REP-004"
+	RepRepoYoung      = "TFCAP-REP-005"
+	RepLowScorecard   = "TFCAP-REP-006"
+	RepFreshRelease   = "TFCAP-REP-007"
+	RepUnknownModule  = "TFCAP-REP-008"
 )
 
 var catalog = map[string]Rule{
@@ -171,6 +180,30 @@ var catalog = map[string]Rule{
 	ProvUpgraded: {ProvUpgraded, "provider-upgraded", model.Low, model.PhaseInit,
 		"A provider version changed since the lock was reviewed.",
 		"Routine, but worth a glance at the provider's changelog."},
+	RepKnownMalicious: {RepKnownMalicious, "known-malicious", model.Critical, model.PhaseInit,
+		"Module or provider is on tfcap's list of confirmed malicious packages.",
+		"The list only contains packages with a public, verified incident report. Remove it and rotate any credentials that were present where it ran."},
+	RepRepoMissing: {RepRepoMissing, "source-repo-missing", model.High, model.PhaseInit,
+		"The module's GitHub repository no longer exists (--online).",
+		"A deleted or renamed repository name can be registered by someone else (repo-jacking), and the next init then fetches their code."},
+	RepRepoMoved: {RepRepoMoved, "source-repo-moved", model.Medium, model.PhaseInit,
+		"The module's GitHub repository was renamed or transferred (--online).",
+		"GitHub redirects the old name until someone claims it. Point the source at the new location."},
+	RepRepoArchived: {RepRepoArchived, "source-repo-archived", model.Low, model.PhaseInit,
+		"The module's GitHub repository is archived (--online).",
+		"Archived repositories get no security fixes."},
+	RepRepoYoung: {RepRepoYoung, "source-repo-young", model.Medium, model.PhaseInit,
+		"The module's GitHub repository or registry namespace is less than 90 days old (--online).",
+		"New publishers have no track record; most malicious packages are young."},
+	RepLowScorecard: {RepLowScorecard, "low-openssf-scorecard", model.Low, model.PhaseInit,
+		"The source repository scores below 4/10 on the OpenSSF Scorecard (--online).",
+		"Weak repository security practices (no branch protection, unpinned CI, no code review) make a takeover easier."},
+	RepFreshRelease: {RepFreshRelease, "fresh-release", model.Low, model.PhaseInit,
+		"The registry version in use was published in the last 7 days (--online).",
+		"Compromised releases are usually caught within days. A short cool-off before adopting new versions avoids most of them."},
+	RepUnknownModule: {RepUnknownModule, "registry-module-not-found", model.Medium, model.PhaseInit,
+		"The public registry does not know this module or version (--online).",
+		"The module may have been removed, often because it was malicious, or the source is misspelled."},
 	ProvMutated: {ProvMutated, "provider-content-changed", model.Critical, model.PhaseInit,
 		"A provider's checksums changed while its version stayed the same.",
 		"The registry's checksums for a given provider version never change. Different hashes for the same version mean a different binary: a compromised release or registry."},

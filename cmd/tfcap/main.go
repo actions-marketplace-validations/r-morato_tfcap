@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -23,6 +24,7 @@ import (
 	"github.com/r-morato/tfcap/internal/output"
 	"github.com/r-morato/tfcap/internal/pin"
 	"github.com/r-morato/tfcap/internal/policy"
+	"github.com/r-morato/tfcap/internal/reputation"
 	"github.com/r-morato/tfcap/internal/sbom"
 )
 
@@ -116,6 +118,7 @@ type common struct {
 	sarifBase string
 	policy    string
 	noPolicy  bool
+	online    bool
 }
 
 func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
@@ -125,6 +128,7 @@ func (c *common) register(fs *flag.FlagSet, formats, defFailOn string) {
 	fs.StringVar(&c.minSev, "min-severity", "info", "hide findings below this severity")
 	fs.StringVar(&c.policy, "policy", "", "policy file with accepted findings (default: <dir>/tfcap.hcl if present)")
 	fs.BoolVar(&c.noPolicy, "no-policy", false, "ignore tfcap.hcl exceptions")
+	fs.BoolVar(&c.online, "online", false, "also query the module registry, GitHub and OpenSSF Scorecard (uses $GITHUB_TOKEN if set)")
 	fs.BoolVar(&c.noColor, "no-color", false, "disable colored output (also honors NO_COLOR)")
 	fs.StringVar(&c.dataDir, "data-dir", "", "Terraform data dir (default: $TF_DATA_DIR or .terraform)")
 	fs.BoolVar(&c.third, "third-party-only", false, "only report capabilities from third-party (non-local) modules")
@@ -199,6 +203,28 @@ func (c *common) applyPolicy(dir string, caps []model.Capability, stderr io.Writ
 	}
 	return o.Kept, o.Accepted, nil
 }
+
+// onlineChecks runs the opt-in reputation checks for third-party modules.
+func (c *common) onlineChecks(rep *model.Report, stderr io.Writer) []model.Capability {
+	if !c.online {
+		return nil
+	}
+	tok := os.Getenv("GITHUB_TOKEN")
+	if tok == "" {
+		tok = os.Getenv("GH_TOKEN")
+	}
+	cl := newReputation(tok)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	caps, warns := cl.Check(ctx, rep)
+	for _, w := range warns {
+		fmt.Fprintln(stderr, "tfcap: warning: --online:", w)
+	}
+	return caps
+}
+
+// newReputation is a variable so tests can point it at a fake server.
+var newReputation = reputation.New
 
 // now is a variable so tests can pin the clock.
 var now = time.Now
@@ -276,6 +302,8 @@ func cmdScan(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	rep.Capabilities = append(rep.Capabilities, c.onlineChecks(rep, stderr)...)
+	rep.Sort()
 	if rep.Capabilities, rep.Accepted, err = c.applyPolicy(dirArg(fs), rep.Capabilities, stderr); err != nil {
 		return err
 	}
@@ -517,6 +545,7 @@ func cmdVerify(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	v := lock.Verify(lf, rep)
+	v.Findings = append(v.Findings, c.onlineChecks(rep, stderr)...)
 	if v.Findings, v.Accepted, err = c.applyPolicy(dir, v.Findings, stderr); err != nil {
 		return err
 	}

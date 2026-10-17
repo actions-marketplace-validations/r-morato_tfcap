@@ -32,6 +32,12 @@ inputs:
   third-party-only:
     description: Only report capabilities from third-party modules (scan mode).
     default: "true"
+  online:
+    description: >-
+      Also run the --online reputation checks (registry metadata, GitHub
+      repository status, OpenSSF Scorecard). Uses github-token for GitHub API
+      calls. Off by default; tfcap is offline unless you ask.
+    default: "false"
   comment:
     description: Post or update a PR comment with the results.
     default: "true"
@@ -88,6 +94,8 @@ runs:
         MIN_SEV: ${{ inputs.min-severity }}
         THIRD: ${{ inputs.third-party-only }}
         WD: ${{ inputs.working-directory }}
+        ONLINE: ${{ inputs.online }}
+        GITHUB_TOKEN: ${{ inputs.online == 'true' && inputs.github-token || '' }}
       run: |
         set +e
         case "$MODE" in
@@ -97,6 +105,7 @@ runs:
         esac
         extra=()
         if [ "$MODE" = scan ] && [ "$THIRD" = "true" ]; then extra+=(--third-party-only); fi
+        if [ "$ONLINE" = "true" ]; then extra+=(--online); fi
         md=markdown; [ "$MODE" = scan ] && md=text
         tfcap "$MODE" . --format sarif --output "$RUNNER_TEMP/tfcap.sarif" --sarif-base "$WD" --fail-on none --min-severity "$MIN_SEV" "${extra[@]}"
         tfcap "$MODE" . --format "$md" --output "$RUNNER_TEMP/tfcap.md" --fail-on none --min-severity "$MIN_SEV" --no-color "${extra[@]}"

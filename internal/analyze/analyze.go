@@ -636,6 +636,9 @@ func (a *analyzer) provider(p model.Provider, rng hcl.Range) {
 	}
 	a.res.Providers = append(a.res.Providers, p)
 	label := "provider." + p.Name
+	if ref, ok := knownMalicious[addr.Short()]; ok {
+		a.add(rules.RepKnownMalicious, label, rng, fmt.Sprintf("Provider %s is a confirmed malicious package (%s)", addr.Short(), ref), "provider:"+addr.Short(), p.Source)
+	}
 	if target, ok := Typosquat(addr); ok {
 		a.add(rules.ProvTyposquat, label, rng, fmt.Sprintf("Provider %s looks like a typosquat of %s", addr.Short(), target), "provider:"+addr.Short(), p.Source)
 	}
