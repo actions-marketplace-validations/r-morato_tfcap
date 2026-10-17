@@ -213,7 +213,7 @@ Run `tfcap` in a unit directory (the one with `terragrunt.hcl`) after `terragrun
 # .pre-commit-config.yaml
 repos:
   - repo: https://github.com/r-morato/tfcap
-    rev: v0.3.0
+    rev: v0.4.0
     hooks:
       - id: tfcap-verify          # needs `terraform init` to have run
       - id: tfcap-validate-lock
@@ -226,7 +226,7 @@ repos:
 tfcap:
   image: golang:1.25
   variables:
-    TFCAP_VERSION: v0.3.0
+    TFCAP_VERSION: v0.4.0
   before_script:
     - go install github.com/r-morato/tfcap/cmd/tfcap@${TFCAP_VERSION}
     # install terraform or tofu here, then:
@@ -242,6 +242,26 @@ tfcap:
 ```
 
 For approvals on GitLab, run `tfcap lock` locally and commit the lock file; it is a normal reviewed change like any other.
+
+### Sandbox: watch `plan` actually run (Linux)
+
+Static analysis can be outwitted. `tfcap sandbox` runs the real thing and watches:
+
+```sh
+terraform init -backend=false     # outside the sandbox: it needs the network
+tfcap sandbox                     # runs terraform/tofu plan inside it
+tfcap sandbox -- tofu plan -var-file=ci.tfvars
+```
+
+The plan runs in new Linux namespaces (no root needed where unprivileged user namespaces are allowed):
+
+- **No network.** Only loopback exists. Every DNS name resolves to the sandbox, and every IPv4 address routes to it, so lookups, HTTP requests, TLS server names, proxy `CONNECT`s and raw-IP connections are all recorded instead of leaving.
+- **Decoy credentials.** Your real `~/.aws`, `~/.ssh`, `~/.kube` and friends are hidden. The environment and home directory carry fake AWS, GitHub, Azure, GCP and Vault credentials containing a unique canary. If the canary shows up in a DNS name, URL or request body, in plain text, upper case or base64 at any alignment, that's `TFCAP-DYN-002`: theft caught in the act.
+- **Programs and file opens** are recorded with `strace` when it's installed: what Terraform started, what that ran in turn, and who opened a decoy credential file. Findings are attributed to the module whose files were involved.
+
+Calls to well-known provider API domains, and a provider reading its own credentials (the AWS provider reading `~/.aws`), are reported as info. A plan that fails without real credentials is normal and doesn't matter: data sources and their programs have already run by then.
+
+It's a detector, not a security boundary: run it on a disposable CI runner or VM. On Ubuntu 23.10+, AppArmor blocks unprivileged user namespaces; use `sudo -E tfcap sandbox` there, or set `kernel.apparmor_restrict_unprivileged_userns=0`. HTTPS bodies are encrypted, so a canary inside one is only seen if it also appears in the URL host, DNS or a program's arguments. Try it on [`examples/sandbox-canary`](examples/sandbox-canary).
 
 ### Diff two trees or reports
 
@@ -262,6 +282,7 @@ tfcap diff base.json head.json --format markdown > comment.md
 | `tfcap verify [dir]` | Check against the lock. Formats: `text`, `json`, `markdown`, `sarif`. |
 | `tfcap pin [dir]` | Rewrite git module refs to the commit they resolved to. `--check` for CI, `--exact-registry` for registry versions. |
 | `tfcap sbom [dir]` | CycloneDX 1.6 SBOM of modules and providers. |
+| `tfcap sandbox [dir] [-- cmd]` | Run `plan` with no network and decoy credentials, and report what it tried (Linux). |
 | `tfcap validate-lock <file>...` | Strict schema check of a lock file (unknown fields, malformed hashes). |
 | `tfcap rules` | List every rule (`--format markdown` for docs). |
 
@@ -281,6 +302,8 @@ The full catalog, with rationale, is in [docs/rules.md](docs/rules.md). The high
 | **IAM** | `*:*` admin grants, `service:*`, `NotAction`, privilege-escalation actions, `Principal: "*"`. Covers `aws_iam_policy_document`, `jsonencode({...})` and heredoc JSON. |
 | **Module sources** | Unpinned git, tag/branch refs instead of SHAs, inexact registry versions, archive URLs, plain-HTTP transports, content changed under the same version |
 | **Providers** | Typosquats of ~90 popular providers, confirmed malicious packages, custom registry hosts, exec-capable providers, community namespaces in third-party code; with a lock, new, upgraded and mutated providers |
+| **Expressions and secrets** | Locals, variable defaults and pure functions are evaluated, so a host or command assembled with `join()`, `format()` or `base64decode()` is found. Secrets (sensitive or secret-named variables, secret-store reads, generated passwords) are followed through locals into HTTP, DNS, `external` and `local-exec`. |
+| **Observed behavior** (`sandbox`) | Network attempts, honeytokens leaving, programs run and credential files opened during a real `plan` |
 | **Reputation** (`--online`) | Unknown registry versions, fresh releases, missing/renamed/archived/young repositories, low OpenSSF Scorecard |
 
 Every finding records the **phase** it fires in (`init`, `plan`, `apply`, `static`). Anything in `plan` runs before your approval gate.
@@ -419,6 +442,10 @@ Outputs: `exit-code` (`0` ok, `1` policy failure, `2` error) and, for `approve-p
 
 Pin this Action, and every other Action, to a commit SHA: the Trivy and KICS Actions were both hit by supply-chain incidents earlier this year. Because tfcap builds from the Action's own source by default, pinning the Action also pins the scanner binary.
 
+## Benchmark
+
+On 27 popular module repositories (197 modules), tfcap takes 4.6 seconds in total, and 14 repositories have no findings at all. All 42 critical and high findings were reviewed by hand: every one is a module that really runs programs during plan or apply. Details: [docs/benchmark.md](docs/benchmark.md).
+
 ## How it works
 
 - Parses `.tf`, `.tofu`, `.tf.json` and `.tofu.json` with HashiCorp's own `hcl/v2` parser. The JSON syntax gets the same rules, because it's a classic place to hide things.
@@ -430,18 +457,19 @@ Pin this Action, and every other Action, to a commit SHA: the Trivy and KICS Act
 
 ## Limitations
 
-- **Static analysis, not a sandbox.** A determined attacker can build a command from variables at runtime. `tfcap` raises the cost and catches the techniques used in real incidents so far. A sandboxed `plan` runner that records exec and network activity is on the roadmap.
+- **Static analysis has limits.** `tfcap` evaluates what it can, but values that only exist at run time (data source results, inputs without defaults) can't be followed statically. That's what `tfcap sandbox` is for.
 - **IAM coverage is AWS-shaped.** For deep policy analysis, use Checkov or Trivy alongside.
 - Provider *binaries* aren't analyzed. `tfcap` checks provider identity (typosquats, hosts) and integrity (checksums), not provider code.
 
 ## Roadmap
 
 - [ ] `tfcap fetch`: resolve and download remote modules without `terraform init` (pre-init review of a PR)
-- [ ] Sandboxed `plan` mode: run plan in a network-isolated container and record every exec/connect attempt
 - [ ] Azure/GCP IAM wildcard rules
 - [x] Policy file with expiring exceptions (`tfcap.hcl`)
 - [x] Registry and repository reputation checks (`--online`)
 - [x] Provider checksum locking, SBOM, Terragrunt, pre-commit
+- [x] Expression evaluation and secret flow tracking
+- [x] Sandboxed `plan` that records network, exec and credential access
 
 ## Contributing
 
