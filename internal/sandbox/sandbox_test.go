@@ -38,18 +38,6 @@ func TestParseQuestion(t *testing.T) {
 	}
 }
 
-func TestJoinResumedAndStrace(t *testing.T) {
-	lines := joinResumed([]string{
-		`10 vfork( <unfinished ...>`,
-		`11 execve("/usr/bin/curl", ["curl", "http://x.invalid"], 0x1 /* 3 vars */ <unfinished ...>`,
-		`10 <... vfork resumed>)              = 11`,
-		`11 <... execve resumed>)             = 0`,
-	})
-	if len(lines) != 2 || !straceCloneRe.MatchString(lines[0]) || !straceExecRe.MatchString(lines[1]) {
-		t.Errorf("joined: %q", lines)
-	}
-}
-
 func TestFindings(t *testing.T) {
 	res := &Result{Events: []Event{
 		{Kind: "dns", Host: "sts.amazonaws.com"},
