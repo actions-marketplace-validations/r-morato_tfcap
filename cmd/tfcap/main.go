@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime/debug"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/r-morato/tfcap/internal/pin"
 	"github.com/r-morato/tfcap/internal/policy"
 	"github.com/r-morato/tfcap/internal/reputation"
+	"github.com/r-morato/tfcap/internal/sandbox"
 	"github.com/r-morato/tfcap/internal/sbom"
 )
 
@@ -40,6 +42,7 @@ Usage:
   tfcap verify [dir]              Check modules against tfcap.lock.json (tag mutation, new capabilities)
   tfcap pin    [dir]              Rewrite git module sources to the commit they resolved to
   tfcap sbom   [dir]              Print a CycloneDX SBOM of modules and providers
+  tfcap sandbox [dir] [-- cmd]    Run plan with no network and decoy credentials; report what it tried (Linux)
   tfcap validate-lock <file>...   Strictly check a tfcap.lock.json file
   tfcap rules                     List detection rules
   tfcap version                   Print version
@@ -82,6 +85,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdPin(args[1:], stdout, stderr)
 	case "sbom":
 		err = cmdSBOM(args[1:], stdout, stderr)
+	case "sandbox":
+		err = cmdSandbox(args[1:], stdout, stderr)
+	case sandbox.ChildArg:
+		sandbox.Child()
+		return 2
 	case "validate-lock":
 		err = cmdValidateLock(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -711,4 +719,100 @@ func countThirdParty(rep *model.Report) int {
 		}
 	}
 	return n
+}
+
+// ---- sandbox ----
+
+func cmdSandbox(args []string, stdout, stderr io.Writer) error {
+	var command []string
+	for i, a := range args {
+		if a == "--" {
+			args, command = args[:i], args[i+1:]
+			break
+		}
+	}
+	var c common
+	fs := newFlagSet("sandbox", "tfcap sandbox [dir] [flags] [-- command args...]", stderr)
+	c.register(fs, "text|json|sarif", "high")
+	timeout := fs.Duration("timeout", 10*time.Minute, "stop the command after this long")
+	quiet := fs.Bool("quiet", false, "hide the command's own output")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	if err := sandbox.Supported(); err != nil {
+		return err
+	}
+	dir, err := filepath.Abs(dirArg(fs))
+	if err != nil {
+		return err
+	}
+	if len(command) == 0 {
+		bin := ""
+		for _, b := range []string{"terraform", "tofu"} {
+			if p, err := exec.LookPath(b); err == nil {
+				bin = p
+				break
+			}
+		}
+		if bin == "" {
+			return fmt.Errorf("neither terraform nor tofu is on PATH; pass the command after --")
+		}
+		command = []string{bin, "plan", "-input=false", "-lock=false", "-no-color"}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	var cmdOut io.Writer = stderr
+	if *quiet {
+		cmdOut = io.Discard
+	}
+	fmt.Fprintf(stderr, "tfcap: running %s in the sandbox (no network, decoy credentials)\n", strings.Join(command, " "))
+	res, err := sandbox.Run(sandbox.Options{Dir: dir, Command: command, Timeout: *timeout, Self: self, Stdout: cmdOut, Stderr: cmdOut})
+	if err != nil {
+		return err
+	}
+	for _, n := range res.Notes {
+		fmt.Fprintln(stderr, "tfcap: note:", n)
+	}
+	dirs := map[string]string{}
+	if rep, err := discover.Scan(dir, discover.Options{DataDir: c.dataDir, Version: version}); err == nil {
+		for _, m := range rep.Modules {
+			if m.Key != "" {
+				dirs[m.Key] = filepath.ToSlash(m.Dir)
+				dirs[m.Key+"\x00abs"] = filepath.ToSlash(filepath.Join(dir, m.Dir))
+			}
+		}
+	}
+	caps := sandbox.Findings(res, dirs)
+	for i := range caps {
+		caps[i].Module = strings.TrimSuffix(caps[i].Module, "\x00abs")
+	}
+	if caps, _, err = c.applyPolicy(dir, caps, stderr); err != nil {
+		return err
+	}
+	if caps, err = c.filter(caps); err != nil {
+		return err
+	}
+	w, closeFn, err := c.writer(stdout)
+	if err != nil {
+		return err
+	}
+	switch c.format {
+	case "text":
+		output.Sandbox(w, res, caps, c.style(w))
+	case "json":
+		err = output.JSON(w, map[string]any{"schema": "tfcap/sandbox/v1", "result": res, "findings": caps})
+	case "sarif":
+		err = output.SARIF(w, caps, nil, c.sarifURIBase(dirArg(fs)), version)
+	default:
+		err = fmt.Errorf("unknown --format %q", c.format)
+	}
+	if cerr := closeFn(); err == nil {
+		err = cerr
+	}
+	if err != nil {
+		return err
+	}
+	return c.gate(caps)
 }

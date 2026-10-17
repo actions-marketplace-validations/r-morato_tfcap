@@ -66,6 +66,11 @@ const (
 	FlowSecretNet  = "TFCAP-FLOW-001"
 	FlowSecretExec = "TFCAP-FLOW-002"
 
+	DynNetwork    = "TFCAP-DYN-001"
+	DynCanaryLeak = "TFCAP-DYN-002"
+	DynExec       = "TFCAP-DYN-003"
+	DynCredRead   = "TFCAP-DYN-004"
+
 	RepKnownMalicious = "TFCAP-REP-001"
 	RepRepoMissing    = "TFCAP-REP-002"
 	RepRepoMoved      = "TFCAP-REP-003"
@@ -189,6 +194,18 @@ var catalog = map[string]Rule{
 	FlowSecretExec: {FlowSecretExec, "secret-to-exec", model.High, model.PhasePlan,
 		"A secret flows into a program or command (external data source or local-exec).",
 		"Secrets in a command line show up in process lists and CI logs, and the program receiving them can send them anywhere. Passing them in a local-exec environment block is safer and graded medium."},
+	DynNetwork: {DynNetwork, "sandbox-network", model.High, model.PhasePlan,
+		"`tfcap sandbox` saw a DNS lookup or connection during plan.",
+		"Observed, not inferred: something in the plan tried to reach this host. Calls to well-known provider API domains are reported as info."},
+	DynCanaryLeak: {DynCanaryLeak, "sandbox-honeytoken-leak", model.Critical, model.PhasePlan,
+		"`tfcap sandbox` saw a planted decoy credential leave over the network.",
+		"The sandbox plants unique fake credentials in the environment and home directory. Seeing one in a DNS name, HTTP request or URL is credential theft caught in the act."},
+	DynExec: {DynExec, "sandbox-exec", model.High, model.PhasePlan,
+		"`tfcap sandbox` saw a program run during plan (needs strace).",
+		"Terraform and provider plugins are expected; anything else was started by configuration or a provider."},
+	DynCredRead: {DynCredRead, "sandbox-credential-read", model.High, model.PhasePlan,
+		"`tfcap sandbox` saw a decoy credential file opened (needs strace).",
+		"A provider reading its own credentials (the AWS provider reading ~/.aws) is info; any other process doing it is high."},
 	RepKnownMalicious: {RepKnownMalicious, "known-malicious", model.Critical, model.PhaseInit,
 		"Module or provider is on tfcap's list of confirmed malicious packages.",
 		"The list only contains packages with a public, verified incident report. Remove it and rotate any credentials that were present where it ran."},

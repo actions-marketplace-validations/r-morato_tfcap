@@ -14,6 +14,7 @@ import (
 	"github.com/r-morato/tfcap/internal/lock"
 	"github.com/r-morato/tfcap/internal/model"
 	"github.com/r-morato/tfcap/internal/rules"
+	"github.com/r-morato/tfcap/internal/sandbox"
 )
 
 // Style controls terminal rendering.
@@ -623,4 +624,28 @@ func securitySeverity(s model.Severity) string {
 		return "3.0"
 	}
 	return "0.0"
+}
+
+// Sandbox renders what a sandboxed plan tried to do.
+func Sandbox(w io.Writer, res *sandbox.Result, caps []model.Capability, st Style) {
+	fmt.Fprintln(w)
+	if len(caps) == 0 {
+		fmt.Fprintln(w, st.c(green, "Nothing suspicious observed: no unexpected network use, programs or credential reads."))
+	} else {
+		fmt.Fprintln(w, st.c(bold, fmt.Sprintf("Observed during plan (%d)", len(caps))))
+		for _, c := range caps {
+			fmt.Fprintf(w, "  %s %s\n", st.sev(c.Severity), c.Message)
+			fmt.Fprintf(w, "           %s\n", st.c(dim, joinNonEmpty(" ", c.RuleID, displayKey(c.Module))))
+		}
+	}
+	fmt.Fprintln(w)
+	cov := "network, honeytokens"
+	if res.Strace {
+		cov += ", programs, file opens"
+	}
+	status := fmt.Sprintf("command exited %d", res.ExitCode)
+	if res.TimedOut {
+		status = "command timed out"
+	}
+	fmt.Fprintln(w, st.c(dim, fmt.Sprintf("Recorded: %s. %s. A plan that fails without real credentials is normal here.", cov, status)))
 }
