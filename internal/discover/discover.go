@@ -12,6 +12,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -64,6 +65,7 @@ func Scan(root string, opts Options) (*model.Report, error) {
 	rep := &model.Report{Schema: model.ReportSchema, Tool: "tfcap", Version: opts.Version, Root: root}
 	s := &scanner{root: abs, rep: rep, opts: opts, done: map[string]bool{}}
 
+	s.modulesDir = filepath.Join(dataDir, "modules")
 	if m, err := readManifest(filepath.Join(dataDir, "modules", "modules.json")); err == nil {
 		s.fromManifest(m)
 	} else {
@@ -74,10 +76,11 @@ func Scan(root string, opts Options) (*model.Report, error) {
 }
 
 type scanner struct {
-	root string
-	rep  *model.Report
-	opts Options
-	done map[string]bool
+	root       string
+	modulesDir string
+	rep        *model.Report
+	opts       Options
+	done       map[string]bool
 }
 
 func readManifest(p string) (*manifest, error) {
@@ -111,6 +114,11 @@ func (s *scanner) fromManifest(m *manifest) {
 		if res := s.analyzeModule(e.Key, e.Source, e.Version, kind, dir, third); res != nil {
 			calls[e.Key] = res.Calls
 		}
+		if third {
+			if c := gitCommit(dir, s.modulesDir); c != "" {
+				s.rep.Modules[len(s.rep.Modules)-1].Commit = c
+			}
+		}
 	}
 	s.setAnchors(sources, calls)
 }
@@ -136,7 +144,10 @@ func (s *scanner) setAnchors(sources map[string]string, calls map[string][]analy
 			}
 			for _, c := range calls[parent] {
 				if c.Name == parts[n-1] {
-					m.Anchor = &model.Location{File: path.Join(dirs[parent], filepath.ToSlash(c.File)), Line: c.PinLine}
+					file := path.Join(dirs[parent], filepath.ToSlash(c.File))
+					m.Anchor = &model.Location{File: file, Line: c.PinLine}
+					m.Call = &model.CallSite{File: file, Source: c.Source, Version: c.Version,
+						SourceStart: c.SourceStart, SourceEnd: c.SourceEnd, VersionStart: c.VersionStart, VersionEnd: c.VersionEnd}
 				}
 			}
 			break
@@ -280,4 +291,53 @@ func HashDir(dir string) (string, error) {
 		h.Write(b)
 	}
 	return "tfcap1:" + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+var shaRe = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// gitCommit returns the commit a downloaded module is checked out at, by
+// reading the .git directory that terraform/tofu init leaves next to it. It
+// looks from dir up to (not including) the modules directory, because a
+// subdirectory source (//modules/x) lives inside the cloned repository.
+func gitCommit(dir, modulesDir string) string {
+	stop, _ := filepath.Abs(modulesDir)
+	for d, _ := filepath.Abs(dir); strings.HasPrefix(d, stop+string(filepath.Separator)); d = filepath.Dir(d) {
+		gitDir := filepath.Join(d, ".git")
+		st, err := os.Stat(gitDir)
+		if err != nil {
+			continue
+		}
+		if !st.IsDir() { // worktree-style ".git" file: "gitdir: <path>"
+			b, err := os.ReadFile(gitDir)
+			if err != nil || !strings.HasPrefix(string(b), "gitdir:") {
+				return ""
+			}
+			gitDir = strings.TrimSpace(strings.TrimPrefix(string(b), "gitdir:"))
+			if !filepath.IsAbs(gitDir) {
+				gitDir = filepath.Join(d, gitDir)
+			}
+		}
+		head, err := os.ReadFile(filepath.Join(gitDir, "HEAD"))
+		if err != nil {
+			return ""
+		}
+		h := strings.TrimSpace(string(head))
+		if ref, ok := strings.CutPrefix(h, "ref: "); ok {
+			if b, err := os.ReadFile(filepath.Join(gitDir, filepath.FromSlash(ref))); err == nil {
+				h = strings.TrimSpace(string(b))
+			} else if b, err := os.ReadFile(filepath.Join(gitDir, "packed-refs")); err == nil {
+				h = ""
+				for _, line := range strings.Split(string(b), "\n") {
+					if sha, name, ok := strings.Cut(strings.TrimSpace(line), " "); ok && name == ref {
+						h = sha
+					}
+				}
+			}
+		}
+		if shaRe.MatchString(h) {
+			return h
+		}
+		return ""
+	}
+	return ""
 }

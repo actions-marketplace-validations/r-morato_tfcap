@@ -30,6 +30,10 @@ type ModuleCall struct {
 	// PinLine is the line a version bump changes: `version` if present,
 	// otherwise `source` (git refs live there), otherwise the block header.
 	PinLine int
+	// Byte ranges of the source and version expressions in File (End 0 when
+	// absent), used by `tfcap pin` to rewrite them in place.
+	SourceStart, SourceEnd   int
+	VersionStart, VersionEnd int
 }
 
 // Result is the outcome of analyzing one module directory.
@@ -544,10 +548,12 @@ func (a *analyzer) moduleCall(b *hclsyntax.Block, addr string) {
 	if at, ok := attr(b, "source"); ok {
 		call.Source, _ = staticString(at.Expr)
 		call.PinLine = at.SrcRange.Start.Line
+		call.SourceStart, call.SourceEnd = at.Expr.Range().Start.Byte, at.Expr.Range().End.Byte
 	}
 	if at, ok := attr(b, "version"); ok {
 		call.Version, _ = staticString(at.Expr)
 		call.PinLine = at.SrcRange.Start.Line
+		call.VersionStart, call.VersionEnd = at.Expr.Range().Start.Byte, at.Expr.Range().End.Byte
 	}
 	a.res.Calls = append(a.res.Calls, call)
 	a.checkSource(call, addr, b.TypeRange)

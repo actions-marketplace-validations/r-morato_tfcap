@@ -20,6 +20,7 @@ import (
 	"github.com/r-morato/tfcap/internal/lock"
 	"github.com/r-morato/tfcap/internal/model"
 	"github.com/r-morato/tfcap/internal/output"
+	"github.com/r-morato/tfcap/internal/pin"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -32,6 +33,7 @@ Usage:
   tfcap diff   <base> <head>      Show capabilities added/removed between two dirs or JSON reports
   tfcap lock   [dir]              Write tfcap.lock.json pinning module content + reviewed capabilities
   tfcap verify [dir]              Check modules against tfcap.lock.json (tag mutation, new capabilities)
+  tfcap pin    [dir]              Rewrite git module sources to the commit they resolved to
   tfcap rules                     List detection rules
   tfcap version                   Print version
 
@@ -69,6 +71,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		err = cmdVerify(args[1:], stdout, stderr)
 	case "rules":
 		err = cmdRules(args[1:], stdout, stderr)
+	case "pin":
+		err = cmdPin(args[1:], stdout, stderr)
 	case "validate-lock":
 		err = cmdValidateLock(args[1:], stdout, stderr)
 	case "version", "--version", "-v":
@@ -424,9 +428,9 @@ func cmdLock(args []string, stdout, stderr io.Writer) error {
 	for _, ch := range changes {
 		switch ch.Kind {
 		case "added":
-			fmt.Fprintf(stdout, "  + %s  added: %s (%d capabilities)\n", displayModule(ch.Key), ch.To, ch.NewCaps)
+			fmt.Fprintf(stdout, "  + %s  added: %s (%d capabilities)\n", displayModule(ch.Key), shortSource(ch.To), ch.NewCaps)
 		case "updated":
-			fmt.Fprintf(stdout, "  ~ %s  %s → %s (%d new capabilities)\n", displayModule(ch.Key), ch.From, ch.To, ch.NewCaps)
+			fmt.Fprintf(stdout, "  ~ %s  %s → %s (%d new capabilities)\n", displayModule(ch.Key), shortSource(ch.From), shortSource(ch.To), ch.NewCaps)
 		case "removed":
 			fmt.Fprintf(stdout, "  - %s  removed\n", displayModule(ch.Key))
 		default:
@@ -517,4 +521,55 @@ func cmdValidateLock(args []string, stdout, stderr io.Writer) error {
 	}
 	fmt.Fprintln(stdout, "ok")
 	return nil
+}
+
+func cmdPin(args []string, stdout, stderr io.Writer) error {
+	fs := newFlagSet("pin", "tfcap pin [dir] [flags]", stderr)
+	exact := fs.Bool("exact-registry", false, "also pin registry modules to the exact version installed")
+	check := fs.Bool("check", false, "don't write anything; exit 1 if something would be pinned (for CI)")
+	dataDir := fs.String("data-dir", "", "Terraform data dir (default: $TF_DATA_DIR or .terraform)")
+	if err := parse(fs, args); err != nil {
+		return err
+	}
+	dir := dirArg(fs)
+	rep, err := discover.Scan(dir, discover.Options{DataDir: *dataDir, Version: version})
+	if err != nil {
+		return err
+	}
+	changes, notes, edits := pin.Plan(dir, rep, pin.Options{ExactRegistry: *exact})
+	for _, n := range notes {
+		fmt.Fprintln(stderr, "tfcap: note:", n)
+	}
+	if len(changes) == 0 {
+		fmt.Fprintln(stdout, "Nothing to pin: every third-party module is already pinned.")
+		return nil
+	}
+	verb := "Pinned"
+	if *check {
+		verb = "Would pin"
+	}
+	for _, c := range changes {
+		fmt.Fprintf(stdout, "%s %s (%s:%d)\n    %s\n  → %s\n", verb, c.Module, c.File, c.Line, c.From, c.To)
+	}
+	if *check {
+		return exitError{1}
+	}
+	if err := pin.Apply(edits); err != nil {
+		return err
+	}
+	fmt.Fprintln(stdout, "\nNext: run `terraform init` (sources changed), then `tfcap verify` and `tfcap lock`.")
+	return nil
+}
+
+// shortSource keeps lock summaries readable: git sources show only their
+// ref (SHAs shortened), registry sources their address and version.
+func shortSource(s string) string {
+	if i := strings.Index(s, "?ref="); i >= 0 {
+		ref := s[i+5:]
+		if len(ref) >= 40 {
+			ref = ref[:12]
+		}
+		return "ref=" + ref
+	}
+	return strings.TrimPrefix(s, "registry.terraform.io/")
 }

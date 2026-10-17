@@ -371,7 +371,7 @@ func TestLockReportsChanges(t *testing.T) {
 	if code != 0 {
 		t.Fatal(errs)
 	}
-	if !strings.Contains(out, "~ module.network") || !strings.Contains(out, "1.4.0 → registry.terraform.io/acme-oss/network/aws@1.4.1") ||
+	if !strings.Contains(out, "~ module.network") || !strings.Contains(out, "acme-oss/network/aws@1.4.0 → acme-oss/network/aws@1.4.1") ||
 		!strings.Contains(out, "new capabilities") {
 		t.Errorf("unexpected summary:\n%s", out)
 	}
@@ -419,5 +419,73 @@ func TestLockSingleModule(t *testing.T) {
 	}
 	if code, _, _ := runCLI(t, "lock", dir, "--module", "nope"); code != 2 {
 		t.Errorf("unknown module should be an error (exit 2), got %d", code)
+	}
+}
+
+// A git module whose init left .git metadata behind: pin rewrites the ref
+// to the commit, keeps a comment, and is idempotent.
+func TestPinGitModule(t *testing.T) {
+	dir := t.TempDir()
+	const sha = "0123456789abcdef0123456789abcdef01234567"
+	src := "git::https://github.com/acme/net.git?ref=v1.2.0"
+	os.WriteFile(filepath.Join(dir, "main.tf"), []byte("module \"net\" {\n  source = \""+src+"\"\n}\n"), 0o644)
+	mod := filepath.Join(dir, ".terraform/modules/net")
+	os.MkdirAll(filepath.Join(mod, ".git"), 0o755)
+	os.WriteFile(filepath.Join(mod, ".git/HEAD"), []byte(sha+"\n"), 0o644)
+	os.WriteFile(filepath.Join(mod, "main.tf"), []byte("locals {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/modules.json"), []byte(`{"Modules":[{"Key":"","Source":"","Dir":"."},`+
+		`{"Key":"net","Source":"`+src+`","Dir":".terraform/modules/net"}]}`), 0o644)
+
+	if code, _, _ := runCLI(t, "pin", dir, "--check"); code != 1 {
+		t.Fatalf("--check should exit 1 when something would change, got %d", code)
+	}
+	if code, out, errs := runCLI(t, "pin", dir); code != 0 {
+		t.Fatalf("pin: %d %s %s", code, out, errs)
+	}
+	got, _ := os.ReadFile(filepath.Join(dir, "main.tf"))
+	want := "  source = \"git::https://github.com/acme/net.git?ref=" + sha + "\" # tfcap pin: was ref=v1.2.0\n"
+	if !strings.Contains(string(got), want) {
+		t.Fatalf("main.tf not pinned as expected:\n%s", got)
+	}
+	if _, out, _ := runCLI(t, "pin", dir); !strings.Contains(out, "Nothing to pin") {
+		t.Errorf("second pin should be a no-op:\n%s", out)
+	}
+}
+
+func TestPinExactRegistry(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "main.tf"), []byte("module \"vpc\" {\n  source  = \"terraform-aws-modules/vpc/aws\"\n  version = \"~> 5.0\"\n}\n"), 0o644)
+	os.MkdirAll(filepath.Join(dir, ".terraform/modules/vpc"), 0o755)
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/vpc/main.tf"), []byte("locals {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/modules.json"), []byte(`{"Modules":[{"Key":"","Source":"","Dir":"."},`+
+		`{"Key":"vpc","Source":"registry.terraform.io/terraform-aws-modules/vpc/aws","Version":"5.8.1","Dir":".terraform/modules/vpc"}]}`), 0o644)
+	if _, out, _ := runCLI(t, "pin", dir); !strings.Contains(out, "Nothing to pin") {
+		t.Errorf("registry modules are only pinned with --exact-registry:\n%s", out)
+	}
+	runCLI(t, "pin", dir, "--exact-registry")
+	got, _ := os.ReadFile(filepath.Join(dir, "main.tf"))
+	if !strings.Contains(string(got), `version = "5.8.1" # tfcap pin: was ~> 5.0`) {
+		t.Fatalf("version not pinned:\n%s", got)
+	}
+}
+
+// When init kept git metadata, a moved tag is reported with both commits.
+func TestMutationNamesCommits(t *testing.T) {
+	dir := t.TempDir()
+	const a, b = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	src := "git::https://github.com/acme/net.git?ref=v1.2.0"
+	os.WriteFile(filepath.Join(dir, "main.tf"), []byte("module \"net\" {\n  source = \""+src+"\"\n}\n"), 0o644)
+	mod := filepath.Join(dir, ".terraform/modules/net")
+	os.MkdirAll(filepath.Join(mod, ".git"), 0o755)
+	os.WriteFile(filepath.Join(mod, ".git/HEAD"), []byte(a+"\n"), 0o644)
+	os.WriteFile(filepath.Join(mod, "main.tf"), []byte("locals {}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, ".terraform/modules/modules.json"), []byte(`{"Modules":[{"Key":"","Source":"","Dir":"."},`+
+		`{"Key":"net","Source":"`+src+`","Dir":".terraform/modules/net"}]}`), 0o644)
+	runCLI(t, "lock", dir)
+	os.WriteFile(filepath.Join(mod, ".git/HEAD"), []byte(b+"\n"), 0o644)
+	os.WriteFile(filepath.Join(mod, "evil.tf"), []byte("locals { x = 1 }\n"), 0o644)
+	_, out, _ := runCLI(t, "verify", dir, "--no-color")
+	if !strings.Contains(out, "now resolves to commit bbbbbbbbbbbb (locked: aaaaaaaaaaaa)") {
+		t.Errorf("mutation message should name both commits:\n%s", out)
 	}
 }

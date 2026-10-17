@@ -127,6 +127,20 @@ type Module struct {
 	// Downloaded module files are not part of your repository, so reports
 	// such as SARIF point here instead.
 	Anchor *Location `json:"anchor,omitempty"`
+	// Commit is the git commit the module was downloaded at, when init kept
+	// the git metadata (git sources, and registry modules served from git).
+	Commit string `json:"commit,omitempty"`
+	// Call is the module block in first-party code that brings this module
+	// in (the same block as Anchor), with byte ranges for rewriting.
+	Call *CallSite `json:"-"`
+}
+
+// CallSite locates a module block's source and version in a file.
+type CallSite struct {
+	File                     string // relative to the scanned root
+	Source, Version          string // as written
+	SourceStart, SourceEnd   int
+	VersionStart, VersionEnd int
 }
 
 // Location is a file and line relative to the scanned root.

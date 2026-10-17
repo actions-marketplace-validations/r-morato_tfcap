@@ -31,6 +31,7 @@ type Entry struct {
 	Source       string    `json:"source"`
 	Version      string    `json:"version,omitempty"`
 	Hash         string    `json:"hash"`
+	Commit       string    `json:"commit,omitempty"` // git commit the version resolved to
 	Capabilities []LockCap `json:"capabilities"`
 }
 
@@ -54,7 +55,7 @@ func Build(rep *model.Report) *File {
 		if !m.ThirdParty {
 			continue
 		}
-		e := Entry{Key: m.Key, Source: m.Source, Version: m.Version, Hash: m.Hash, Capabilities: []LockCap{}}
+		e := Entry{Key: m.Key, Source: m.Source, Version: m.Version, Hash: m.Hash, Commit: m.Commit, Capabilities: []LockCap{}}
 		seen := map[string]bool{}
 		for _, c := range caps[m.Key] {
 			fp := c.Fingerprint()
@@ -160,9 +161,8 @@ func Verify(f *File, rep *model.Report) *Result {
 			r := rules.Get(rules.SrcContentChanged)
 			res.Findings = append(res.Findings, model.Capability{
 				RuleID: r.ID, Severity: r.Severity, Phase: r.Phase, Module: m.Key, Address: "module." + lastSegment(m.Key),
-				Message: fmt.Sprintf("%s content changed since it was locked (%s → %s). The tag or registry release was re-pointed.",
-					withVersion(m.Source, m.Version), short(e.Hash), short(m.Hash)),
-				Detail: "hash:" + m.Hash,
+				Message: mutatedMessage(e, m),
+				Detail:  "hash:" + m.Hash,
 			})
 			for _, c := range e.Capabilities {
 				known[c.Fingerprint] = true
@@ -321,9 +321,10 @@ func Diff(prev, next *File) []Change {
 func label(e Entry) string { return withVersion(e.Source, e.Version) }
 
 var (
-	hashRe = regexp.MustCompile(`^tfcap1:[0-9a-f]{64}$`)
-	ruleRe = regexp.MustCompile(`^TFCAP-[A-Z]+-[0-9]{3}$`)
-	fpRe   = regexp.MustCompile(`^[0-9a-f]{16}$`)
+	hashRe   = regexp.MustCompile(`^tfcap1:[0-9a-f]{64}$`)
+	commitRe = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+	ruleRe   = regexp.MustCompile(`^TFCAP-[A-Z]+-[0-9]{3}$`)
+	fpRe     = regexp.MustCompile(`^[0-9a-f]{16}$`)
 )
 
 // Validate strictly checks a lock file produced elsewhere (for example by a
@@ -362,6 +363,8 @@ func Validate(path string) error {
 			return fmt.Errorf("%s: module %q has no source", path, m.Key)
 		case !hashRe.MatchString(m.Hash):
 			return fmt.Errorf("%s: module %q has a malformed hash", path, m.Key)
+		case m.Commit != "" && !commitRe.MatchString(m.Commit):
+			return fmt.Errorf("%s: module %q has a malformed commit", path, m.Key)
 		}
 		seen[m.Key] = true
 		for _, c := range m.Capabilities {
@@ -371,4 +374,12 @@ func Validate(path string) error {
 		}
 	}
 	return nil
+}
+
+func mutatedMessage(e Entry, m model.Module) string {
+	msg := fmt.Sprintf("%s content changed since it was locked (%s → %s).", withVersion(m.Source, m.Version), short(e.Hash), short(m.Hash))
+	if e.Commit != "" && m.Commit != "" && e.Commit != m.Commit {
+		return msg + fmt.Sprintf(" The same version now resolves to commit %s (locked: %s): the tag was moved.", m.Commit[:12], e.Commit[:12])
+	}
+	return msg + " The tag or registry release was re-pointed."
 }
