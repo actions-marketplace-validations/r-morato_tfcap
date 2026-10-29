@@ -25,7 +25,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: write   # PR comment
       security-events: write # SARIF upload
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,7 +37,7 @@ jobs:
           working-directory: examples/upgrade-attack/after
           mode: scan
           fail-on: high
-          comment: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+          comment: "false" # don't post the demo findings on real PRs (e.g. Dependabot)
           sarif: "true"
       - name: Expect a policy failure (exit 1)
         env:
