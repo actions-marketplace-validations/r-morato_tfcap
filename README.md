@@ -10,7 +10,7 @@ It isn't theoretical: in August the [Coder registry compromise](https://labs.clo
 
 tfcap records a fingerprint of every third-party module and what it can do: run programs, call the network, read credentials, grant IAM. On every pull request it shows you only what changed.
 
-![tfcap verify catching a malicious patch release: 1.4.0 to 1.4.1 adds a script that reads ~/.aws, a typosquatted provider and an admin role](docs/demo.gif)
+![tfcap verify catching a malicious patch release: 1.4.0 to 1.4.1 adds a script that reads ~/.aws, a typosquatted provider and an admin role](docs/verify.png)
 
 That's a Renovate-style "patch" bump of a VPC module. The example is in [`examples/upgrade-attack`](examples/upgrade-attack), and it's inert: every endpoint uses the reserved `.invalid` domain.
 
