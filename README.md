@@ -66,7 +66,11 @@ jobs:
           working-directory: infra
 ```
 
-It comments on the PR, puts code-scanning alerts on the `module` block that pulled the change in, and fails the check if something risky shows up. See it on [a demo pull request](https://github.com/r-morato/tfcap-action-demo/pull/1). The full setup, including label approval and a daily check for moved tags, is in [docs/github-action.md](docs/github-action.md).
+It comments on the PR, puts code-scanning alerts on the `module` block that pulled the change in, and fails the check if something risky shows up:
+
+![tfcap's pull request comment: module.network upgraded to a new commit, with six new capabilities including a script that reads ~/.aws during plan](docs/pr-comment.png)
+
+See it on [a demo pull request](https://github.com/r-morato/tfcap-action-demo/pull/1). The full setup, including label approval and a daily check for moved tags, is in [docs/github-action.md](docs/github-action.md).
 
 ## What it catches
 
