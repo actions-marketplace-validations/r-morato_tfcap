@@ -41,3 +41,22 @@ jobs:
           if go run ./cmd/tfcap diff examples/upgrade-attack/before examples/upgrade-attack/after; then
             echo "expected the upgrade attack to fail the diff" && exit 1
           fi
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Fuzz the parsers that read untrusted input (20s each)
+        run: |
+          set -e
+          for pkg in ./internal/analyze ./internal/lock ./internal/policy ./internal/sandbox; do
+            for target in $(go test "$pkg" -list '^Fuzz' | grep '^Fuzz'); do
+              echo "== $pkg $target"
+              go test "$pkg" -run '^$' -fuzz "^${target}\$" -fuzztime 20s
+            done
+          done
