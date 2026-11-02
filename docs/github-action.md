@@ -97,6 +97,33 @@ Reviewing a Dependabot or Renovate bump shouldn't mean checking out the branch a
 1. **`approve-prepare`** (read-only token) checks that whoever added the label has **write access** (others are ignored, with a comment saying why), runs `terraform init` and `tfcap lock` on the PR's code, and hands the new lock file to the next job. `tfcap lock` still **refuses MUTATED modules**: a label can never approve code that changed behind an unchanged version.
 2. **`approve-commit`** (write token) never runs the PR's code. It re-checks the approver, checks the lock file was made for the PR's current commit and passes `tfcap validate-lock`, commits **only that file** as `github-actions[bot]` with `Approved-by: @you`, sets a passing `tfcap` status and updates the PR comment.
 
+**One more click, sometimes.** The lock-file commit is pushed with the workflow's `GITHUB_TOKEN`. Since June 2026, GitHub creates the `pull_request` runs that such a push causes in an [approval-required state](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow), so your other checks on that commit (CI, tests, tfcap's own verify job) wait until someone with write access clicks **Approve workflows to run** in the merge box. The `tfcap` status is set directly and doesn't wait. tfcap's approval comment mentions this when it happens.
+
+### Skip the "Approve workflows to run" step
+
+Pushes made with a GitHub App installation token start workflows normally. Create a GitHub App with **Contents: read and write** on the repository, store its ID and private key as secrets, and check out with its token in the `approve-commit` job:
+
+```yaml
+     approve-commit:
+       # ...
+       steps:
+         - id: app-token
+           uses: actions/create-github-app-token@<pin to a commit SHA>
+           with:
+             app-id: ${{ secrets.TFCAP_APP_ID }}
+             private-key: ${{ secrets.TFCAP_APP_PRIVATE_KEY }}
+         - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+           with:
+             ref: ${{ github.head_ref }}
+             token: ${{ steps.app-token.outputs.token }}
+         - uses: r-morato/tfcap@v0
+           with:
+             working-directory: infra
+             mode: approve-commit
+```
+
+Only the push uses the App token. The comment, status and permission checks still use the workflow token, and `approve-prepare` (which runs the PR's code) never sees the App token or any token that can push.
+
 The split matters because `terraform init` on someone's pull request is untrusted work, and it shouldn't happen while holding a token that can push. If you prefer a single job anyway, `mode: approve` does both halves in one (with `contents: write`).
 
 Works for branches in the same repository, including Dependabot and Renovate PRs. Pull requests from forks can't be approved this way (GitHub gives fork PRs a read-only token); run `tfcap lock` locally instead.

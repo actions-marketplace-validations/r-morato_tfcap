@@ -80,10 +80,15 @@ commit() {
   sha=$(git rev-parse HEAD)
   vcode=$(cat "$art/verify_code")
   if [ "$vcode" = 0 ]; then state=success; desc="Module changes approved by @$ACTOR"; else state=failure; desc="Still failing after approval; see the run log"; fi
-  # Pushes made with the workflow token do not start new workflow runs, so
-  # report the result on the new commit directly.
+  # A push made with GITHUB_TOKEN does not start ordinary push workflows, and
+  # since June 2026 the pull_request (synchronize) runs it causes are created
+  # in an approval-required state. Report tfcap's own result on the new commit
+  # directly; other checks wait for "Approve workflows to run" (see below).
   gh api -X POST "repos/$REPO/statuses/$sha" -f state="$state" -f context="$STATUS_CONTEXT" -f description="$desc" >/dev/null
   say '### tfcap: module changes approved ✅' '' "Approved by @$ACTOR. \`tfcap.lock.json\` updated in ${sha:0:7}:" '' '```' "$(cat "$art/summary.txt")" '```'
+  if [ -n "$staged" ]; then
+    { echo; echo "If the merge box shows **Approve workflows to run**, that's expected: GitHub holds other checks on commits pushed with the workflow token. Click it to run them, or [push with a GitHub App token](https://github.com/r-morato/tfcap/blob/main/docs/github-action.md#skip-the-approve-workflows-to-run-step) to skip this step."; } >> "$comment"
+  fi
   if [ "$vcode" != 0 ]; then { echo; echo '```'; cat "$art/verify.txt"; echo '```'; } >> "$comment"; fi
   finish "$vcode"
 }
