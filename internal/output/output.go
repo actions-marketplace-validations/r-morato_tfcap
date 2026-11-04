@@ -341,6 +341,9 @@ func Verify(w io.Writer, v *lock.Result, st Style) {
 			extra = fmt.Sprintf("%s → %s", verLabel(m.LockedSource, m.LockedVer), verLabel(m.Source, m.CurrentVer))
 		}
 		fmt.Fprintf(w, "%s %s %s\n", label, displayKey(m.Key), st.c(dim, extra))
+		if u := CompareURL(m); u != "" {
+			fmt.Fprintf(w, "         %s\n", st.c(dim, "code changes: "+u))
+		}
 	}
 	okProviders := 0
 	for _, p := range v.Providers {
@@ -389,7 +392,12 @@ func VerifyMarkdown(w io.Writer, v *lock.Result) {
 		if status == lock.StatusMutated {
 			status = "🟣 **MUTATED**"
 		}
-		fmt.Fprintf(w, "| `%s` | %s | %s |\n", displayKey(m.Key), status, mdEscape(ver))
+		if u := CompareURL(m); u != "" {
+			ver = mdEscape(ver) + " ([code changes](" + u + "))"
+		} else {
+			ver = mdEscape(ver)
+		}
+		fmt.Fprintf(w, "| `%s` | %s | %s |\n", displayKey(m.Key), status, ver)
 	}
 	for _, p := range v.Providers {
 		if p.Status == "ok" {
