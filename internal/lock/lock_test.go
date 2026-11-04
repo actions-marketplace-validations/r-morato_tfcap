@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/r-morato/tfcap/internal/model"
 )
 
 func TestValidate(t *testing.T) {
@@ -30,5 +32,17 @@ func TestValidate(t *testing.T) {
 		if (err == nil) != tc.ok {
 			t.Errorf("%s: Validate() error = %v, want ok=%v", name, err, tc.ok)
 		}
+	}
+}
+
+func TestVerifyCarriesCommits(t *testing.T) {
+	const a, b = "1111111111111111111111111111111111111111", "2222222222222222222222222222222222222222"
+	src := "git::https://github.com/acme/net.git?ref=v1"
+	locked := &model.Report{Modules: []model.Module{{Key: "net", Source: src, ThirdParty: true, Hash: "tfcap1:aa", Commit: a}}}
+	f := Build(locked)
+	now := &model.Report{Modules: []model.Module{{Key: "net", Source: src, ThirdParty: true, Hash: "tfcap1:bb", Commit: b}}}
+	m := Verify(f, now).Modules[0]
+	if m.Status != StatusMutated || m.LockedCommit != a || m.CurrentCommit != b {
+		t.Errorf("got %+v", m)
 	}
 }

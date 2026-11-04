@@ -146,6 +146,9 @@ type ModuleStatus struct {
 	CurrentVer   string `json:"current_version,omitempty"`
 	LockedHash   string `json:"locked_hash,omitempty"`
 	CurrentHash  string `json:"current_hash,omitempty"`
+	// Git commits the locked and current versions resolved to, when known.
+	LockedCommit  string `json:"locked_commit,omitempty"`
+	CurrentCommit string `json:"current_commit,omitempty"`
 }
 
 // Result of verifying a report against a lock.
@@ -178,7 +181,10 @@ func Verify(f *File, rep *model.Report) *Result {
 		}
 		current[m.Key] = true
 		e, ok := locked[m.Key]
-		st := ModuleStatus{Key: m.Key, Source: m.Source, CurrentVer: m.Version, CurrentHash: m.Hash}
+		st := ModuleStatus{Key: m.Key, Source: m.Source, CurrentVer: m.Version, CurrentHash: m.Hash, CurrentCommit: m.Commit}
+		if ok {
+			st.LockedCommit = e.Commit
+		}
 		known := map[string]bool{}
 		switch {
 		case !ok:
